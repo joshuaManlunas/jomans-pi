@@ -1,0 +1,23 @@
+{
+	"name": "prompt-polish",
+	"version": "1.0.0",
+	"type": "module",
+	"keywords": [
+		"pi-package"
+	],
+	"scripts": {
+		"test": "bun test extensions/prompt-polish/index.test.ts"
+	},
+	"files": [
+		"extensions/"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions/prompt-polish/index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-ai": "*"
+	}
+}

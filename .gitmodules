@@ -1,0 +1,6 @@
+[submodule "jomans-pi-meshed-agents"]
+	path = jomans-pi-meshed-agents
+	url = git@github.com:joshuaManlunas/jomans-meshed-agents.git
+[submodule "pi-dynamic-workflows"]
+	path = pi-dynamic-workflows
+	url = git@github.com:joshuaManlunas/jomans-dynamic-workflow.git
