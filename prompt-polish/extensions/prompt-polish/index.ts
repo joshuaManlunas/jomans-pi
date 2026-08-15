@@ -6,7 +6,7 @@ import type {
 	ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 
-const SHORTCUT = "ctrl+alt+o";
+const SHORTCUT = "ctrl+shift+o";
 const STATUS = "prompt-polish";
 const SYSTEM_PROMPT = `# Role
 
