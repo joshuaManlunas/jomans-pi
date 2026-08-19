@@ -339,7 +339,7 @@ export class BackgroundTaskManager {
 				{ encoding: "utf8", windowsHide: true },
 			);
 			if (result.error) throw result.error;
-			if (result.status !== 0 && this.isAlive(task)) {
+			if (result.status !== 0 && this.isTreeAlive(task)) {
 				throw new Error(
 					result.stderr.trim() || `taskkill exited with code ${result.status}`,
 				);
@@ -362,6 +362,30 @@ export class BackgroundTaskManager {
 		} catch (error) {
 			return (error as NodeJS.ErrnoException).code !== "ESRCH";
 		}
+	}
+
+	private isTreeAlive(task: TaskRecord): boolean {
+		if (this.isAlive(task)) return true;
+		if (process.platform !== "win32") return false;
+		const pid = task.pid ?? task.child?.pid;
+		if (!pid) return false;
+		const result = spawnSync(
+			"powershell.exe",
+			[
+				"-NoProfile",
+				"-Command",
+				`$root=${pid};` +
+					`$parents=@{};Get-CimInstance Win32_Process|ForEach-Object{$parents[$_.ProcessId]=$_.ParentProcessId};` +
+					`foreach($procId in $parents.Keys){` +
+					`$current=$procId;$seen=@{};` +
+					`while($null -ne $current -and $current -ne 0 -and -not $seen.ContainsKey($current)){` +
+					`if($current -eq $root){try{Get-Process -Id $procId -ErrorAction Stop|Out-Null;exit 0}catch{break}};` +
+					`$seen[$current]=$true;$current=$parents[$current]}};exit 1`,
+			],
+			{ encoding: "utf8", windowsHide: true },
+		);
+		if (result.error || result.status === null) return true;
+		return result.status === 0;
 	}
 
 	private async waitUntilGone(
