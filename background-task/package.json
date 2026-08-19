@@ -1,0 +1,23 @@
+{
+	"name": "background-task",
+	"version": "0.1.0",
+	"type": "module",
+	"keywords": [
+		"pi-package"
+	],
+	"scripts": {
+		"test": "bun test extensions/background-task/index.test.ts"
+	},
+	"files": [
+		"extensions/",
+		"README.md"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions/background-task/index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	}
+}
