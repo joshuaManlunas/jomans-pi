@@ -65,4 +65,4 @@ IDs remain stable while the Pi session lives. They are not durable identifiers a
 
 ## Validation
 
-Run `bun run test` for the regression tests and `bun run bench:output` for the original-versus-bounded output append comparison. The benchmark reports runtime, chunk sizes, median batch latency, and retained backing storage; it makes no end-to-end latency claim.
+Run `bun run test` for the regression tests and `bun run bench:output` for the original-versus-bounded output append comparison. The benchmark reports runtime, chunk sizes, median batch latency, retained backing storage, and algorithmic Buffer payload allocation/copy bytes. Allocation/copy counts exclude allocator metadata and RSS, and make no end-to-end latency claim.

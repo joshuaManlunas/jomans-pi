@@ -15,3 +15,16 @@ test("output tails preserve exactly the last bounded bytes and own their storage
 		}
 	}
 });
+
+test("reports retained payload allocation and copy bytes", () => {
+	const metrics = { allocatedBytes: 0, copiedBytes: 0 };
+	const tail = appendOutputTail(
+		Buffer.from("abc"),
+		Buffer.from("123456"),
+		4,
+		metrics,
+	);
+
+	expect(tail.toString()).toBe("3456");
+	expect(metrics).toEqual({ allocatedBytes: 4, copiedBytes: 4 });
+});

@@ -223,15 +223,32 @@ test("forget refuses active tasks and removes only the selected finished task", 
 	expect((await runBackgroundRequest(instance, "forget", process.cwd())).level).toBe("warning");
 });
 
-test("forgotten failures do not accumulate across a thousand task IDs", async () => {
-	const instance = manager({ shell: "/definitely/missing/background-task-shell" });
-	for (let i = 1; i <= 1000; i++) {
-		const task = await instance.start("unused", process.cwd());
-		expect(task.state).toBe("failed");
-		expect(task.id).toBe(`bg-${i}`);
-		instance.forget(task.id);
+test("forgotten completed tasks release captured output references", async () => {
+	const instance = manager({ maxOutputBytes: 128 });
+	const ids: string[] = [];
+	for (let i = 1; i <= 64; i++) {
+		const started = await instance.start(
+			nodeCommand(
+				`process.stdout.write('stdout-${i}'); process.stderr.write('stderr-${i}')`,
+			),
+			process.cwd(),
+		);
+		const task = await waitForTask(instance, started.id, finished);
+		expect(task.state).toBe("exited");
+		expect(task.stdout).toBe(`stdout-${i}`);
+		expect(task.stderr).toBe(`stderr-${i}`);
+		ids.push(task.id);
+	}
+
+	expect(instance.list()).toHaveLength(ids.length);
+	for (const id of ids) {
+		instance.forget(id);
+		expect(instance.inspect(id)).toBeUndefined();
 	}
 	expect(instance.list()).toEqual([]);
+
+	const next = await instance.start(nodeCommand(""), process.cwd());
+	expect(next.id).toBe("bg-65");
 });
 
 test("registers the slash command, plain input handler, and shutdown cleanup", async () => {

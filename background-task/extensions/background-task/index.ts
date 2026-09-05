@@ -66,6 +66,13 @@ const DEFAULT_TERMINATION_GRACE_MS = 1_000;
 const DEFAULT_KILL_GRACE_MS = 1_000;
 const POLL_INTERVAL_MS = 20;
 
+export type OutputTailMetrics = {
+	/** Newly allocated Buffer payload bytes; allocator metadata is excluded. */
+	allocatedBytes: number;
+	/** Bytes copied into the newly allocated Buffer payload. */
+	copiedBytes: number;
+};
+
 function deferred(): { promise: Promise<void>; resolve: () => void } {
 	let resolve = () => {};
 	const promise = new Promise<void>((done) => {
@@ -90,11 +97,19 @@ function decodeTail(buffer: Buffer): string {
 	return buffer.subarray(start).toString("utf8");
 }
 
-export function appendOutputTail(previous: Buffer, chunk: Buffer, limit: number): Buffer {
+export function appendOutputTail(
+	previous: Buffer,
+	chunk: Buffer,
+	limit: number,
+	metrics?: OutputTailMetrics,
+): Buffer {
 	const tail = Buffer.allocUnsafeSlow(Math.min(limit, previous.length + chunk.length));
+	if (metrics) metrics.allocatedBytes += tail.length;
 	const incomingBytes = Math.min(chunk.length, tail.length);
-	previous.copy(tail, 0, previous.length - (tail.length - incomingBytes));
+	const previousBytes = tail.length - incomingBytes;
+	previous.copy(tail, 0, previous.length - previousBytes);
 	chunk.copy(tail, tail.length - incomingBytes, chunk.length - incomingBytes);
+	if (metrics) metrics.copiedBytes += previousBytes + incomingBytes;
 	return tail;
 }
 
