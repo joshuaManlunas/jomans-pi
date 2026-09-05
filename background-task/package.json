@@ -6,7 +6,8 @@
 		"pi-package"
 	],
 	"scripts": {
-		"test": "bun test extensions/background-task/index.test.ts"
+		"test": "bun test extensions/background-task",
+		"bench:output": "bun extensions/background-task/output-tail.bench.ts"
 	},
 	"files": [
 		"extensions/",

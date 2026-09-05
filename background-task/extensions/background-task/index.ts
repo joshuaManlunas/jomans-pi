@@ -90,6 +90,14 @@ function decodeTail(buffer: Buffer): string {
 	return buffer.subarray(start).toString("utf8");
 }
 
+export function appendOutputTail(previous: Buffer, chunk: Buffer, limit: number): Buffer {
+	const tail = Buffer.allocUnsafeSlow(Math.min(limit, previous.length + chunk.length));
+	const incomingBytes = Math.min(chunk.length, tail.length);
+	previous.copy(tail, 0, previous.length - (tail.length - incomingBytes));
+	chunk.copy(tail, tail.length - incomingBytes, chunk.length - incomingBytes);
+	return tail;
+}
+
 function terminal(state: BackgroundTaskState): boolean {
 	return state === "exited" || state === "failed" || state === "stopped";
 }
@@ -113,10 +121,10 @@ export class BackgroundTaskManager {
 			DEFAULT_TERMINATION_GRACE_MS,
 		);
 		this.killGraceMs = positive(options.killGraceMs, DEFAULT_KILL_GRACE_MS);
-		this.maxOutputBytes = positive(
+		this.maxOutputBytes = Math.floor(positive(
 			options.maxOutputBytes,
 			DEFAULT_MAX_OUTPUT_BYTES,
-		);
+		));
 	}
 
 	async start(command: string, cwd: string): Promise<BackgroundTaskSnapshot> {
@@ -210,6 +218,14 @@ export class BackgroundTaskManager {
 		return task ? this.snapshot(task) : undefined;
 	}
 
+	forget(id: string): void {
+		const task = this.tasks.get(id);
+		if (!task) throw new Error(`Unknown background task: ${id}`);
+		if (!task.settled || !terminal(task.state) || this.isAlive(task))
+			throw new Error(`Cannot forget active background task: ${id}`);
+		this.tasks.delete(id);
+	}
+
 	async stop(id: string): Promise<BackgroundTaskSnapshot> {
 		const task = this.tasks.get(id);
 		if (!task) throw new Error(`Unknown background task: ${id}`);
@@ -261,16 +277,10 @@ export class BackgroundTaskManager {
 		const key = stream === "stdout" ? "stdoutBuffer" : "stderrBuffer";
 		const truncationKey =
 			stream === "stdout" ? "stdoutTruncated" : "stderrTruncated";
-		const next = Buffer.concat([
-			task[key],
-			Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk),
-		]);
-		if (next.length > this.maxOutputBytes) {
-			task[key] = next.subarray(next.length - this.maxOutputBytes);
+		const incoming = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+		if (task[key].length + incoming.length > this.maxOutputBytes)
 			task[truncationKey] = true;
-		} else {
-			task[key] = next;
-		}
+		task[key] = appendOutputTail(task[key], incoming, this.maxOutputBytes);
 	}
 
 	private handleChildError(task: TaskRecord, error: Error): void {
@@ -482,7 +492,7 @@ export async function runBackgroundRequest(
 	if (!input) {
 		return {
 			message:
-				"Usage: background <command> | background list | background inspect <id> | background stop <id>",
+				"Usage: background <command> | background list | background inspect <id> | background stop <id> | background forget <id>",
 			level: "warning",
 		};
 	}
@@ -497,7 +507,7 @@ export async function runBackgroundRequest(
 		};
 	}
 
-	for (const action of ["inspect", "stop"] as const) {
+	for (const action of ["inspect", "stop", "forget"] as const) {
 		if (input === action || input.startsWith(`${action} `)) {
 			const id = input.slice(action.length).trim();
 			if (!id)
@@ -505,6 +515,14 @@ export async function runBackgroundRequest(
 					message: `Usage: background ${action} <id>`,
 					level: "warning",
 				};
+			if (action === "forget") {
+				try {
+					manager.forget(id);
+					return { message: `Forgot background task: ${id}`, level: "info" };
+				} catch (error) {
+					return { message: errorMessage(error), level: "error" };
+				}
+			}
 			const task = manager.inspect(id);
 			if (!task)
 				return { message: `Unknown background task: ${id}`, level: "error" };
@@ -558,7 +576,7 @@ export default function backgroundTaskExtension(pi: ExtensionAPI): void {
 	};
 
 	pi.registerCommand("background", {
-		description: "Start, list, inspect, or stop background processes",
+		description: "Start, list, inspect, stop, or forget finished background processes",
 		handler: handle,
 	});
 

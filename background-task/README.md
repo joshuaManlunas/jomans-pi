@@ -46,9 +46,12 @@ The plain `background ...` form is shorthand for starting a task. Manage that ta
 /background list
 /background inspect bg-1
 /background stop bg-1
+/background forget bg-1
 ```
 
 IDs remain stable while the Pi session lives. They are not durable identifiers across a process restart.
+
+`forget` removes a selected finished task and its captured output from session history. It refuses active tasks. Forgotten IDs are never reused in the session; inspecting or forgetting them again reports an unknown task. Finished tasks remain inspectable until explicitly forgotten or the session ends.
 
 ## Runtime boundaries
 
@@ -57,5 +60,9 @@ IDs remain stable while the Pi session lives. They are not durable identifiers a
 - On POSIX, cleanup signals the task's process group with `SIGTERM`, then `SIGKILL` after the termination grace period.
 - On Windows, cleanup uses `taskkill` for the shell's process tree, adding forced termination after the grace period.
 - Task history is in memory only; restarting Pi loses history and session-local IDs.
-- Commands beginning with `list`, `inspect`, `stop`, `run`, or `start` should use `background run -- <command>` to avoid management-subcommand ambiguity.
+- Commands beginning with `list`, `inspect`, `stop`, `forget`, `run`, or `start` should use `background run -- <command>` to avoid management-subcommand ambiguity.
 - A command that self-daemonizes, double-forks, or otherwise detaches descendants may outlive cleanup. Use non-detaching commands when lifecycle cleanup matters.
+
+## Validation
+
+Run `bun run test` for the regression tests and `bun run bench:output` for the original-versus-bounded output append comparison. The benchmark reports runtime, chunk sizes, median batch latency, and retained backing storage; it makes no end-to-end latency claim.
