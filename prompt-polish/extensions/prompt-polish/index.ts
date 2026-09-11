@@ -1,13 +1,34 @@
 import { randomBytes } from "node:crypto";
+import { spawn } from "node:child_process";
 import type { UserMessage } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
-	ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
+import {
+	Key,
+	type KeybindingsManager,
+	MouseRegion,
+	matchesKey,
+	ScrollView,
+	SelectList,
+	Text,
+	type TUI,
+	type TuiMouseEvent,
+	truncateToWidth,
+	VStack,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
+import { loadPolishConfig, type PolishConfig } from "./config.ts";
 
 const SHORTCUT = "ctrl+shift+o";
+export const PREVIEW_SHORTCUT = "ctrl+shift+e";
+export const COPY_SHORTCUT = "ctrl+shift+y";
+export const HISTORY_SHORTCUT = "ctrl+shift+h";
 const STATUS = "prompt-polish";
+const PREVIEW_WIDGET = "prompt-polish-preview";
+const HISTORY_ENTRY_TYPE = "prompt-polish-history";
+const MAX_HISTORY_ITEMS = 20;
 const SYSTEM_PROMPT = `# Role
 
 You are a Prompt Engineering Specialist. Your sole function is to
@@ -188,6 +209,61 @@ type PromptPolishDiagnostic = {
 type PromptPolishOptions = {
 	timeoutMs?: number;
 	logger?: (diagnostic: PromptPolishDiagnostic) => void;
+};
+
+export type PolishHistoryItem = {
+	original: string;
+	improved: string;
+	timestamp: number;
+};
+
+export function addPolishHistoryItem(
+	history: readonly PolishHistoryItem[],
+	item: PolishHistoryItem,
+): PolishHistoryItem[] {
+	return [
+		item,
+		...history.filter((entry) => entry.improved !== item.improved),
+	].slice(0, MAX_HISTORY_ITEMS);
+}
+
+export function restorePolishHistory(
+	entries: readonly unknown[],
+): PolishHistoryItem[] {
+	let history: PolishHistoryItem[] = [];
+	for (const entry of entries) {
+		if (!isRecord(entry) || entry.type !== "custom") continue;
+		if (entry.customType !== HISTORY_ENTRY_TYPE || !isRecord(entry.data))
+			continue;
+		if (
+			typeof entry.data.original !== "string" ||
+			typeof entry.data.improved !== "string" ||
+			!entry.data.improved.trim()
+		)
+			continue;
+		const timestamp =
+			typeof entry.data.timestamp === "number"
+				? entry.data.timestamp
+				: typeof entry.timestamp === "number"
+					? entry.timestamp
+					: 0;
+		history = addPolishHistoryItem(history, {
+			original: entry.data.original,
+			improved: entry.data.improved,
+			timestamp,
+		});
+	}
+	return history;
+}
+
+type PolishModel = NonNullable<ExtensionContext["model"]>;
+type ModelLookupRegistry = Pick<
+	ExtensionContext["modelRegistry"],
+	"complete" | "getAvailable"
+>;
+type CompletionOverrides = {
+	reasoningEffort?: Exclude<PolishConfig["thinkingLevel"], "off">;
+	serviceTier?: "priority";
 };
 
 type CompletionFailureKind = "timeout" | "cancelled" | "provider";
@@ -444,10 +520,710 @@ function unsupportedToolError(): Error {
 	);
 }
 
+function isModelLike(value: unknown): value is PolishModel {
+	return (
+		isRecord(value) &&
+		typeof value.provider === "string" &&
+		typeof value.id === "string"
+	);
+}
+
+function compareModels(left: PolishModel, right: PolishModel): number {
+	if (left.provider !== right.provider)
+		return left.provider < right.provider ? -1 : 1;
+	if (left.id === right.id) return 0;
+	return left.id < right.id ? -1 : 1;
+}
+
+export function resolveConfiguredModel(
+	modelRef: string,
+	fallback: PolishModel,
+	registry: ExtensionContext["modelRegistry"],
+): PolishModel {
+	const lookup = registry as ModelLookupRegistry;
+	let available: PolishModel[];
+	try {
+		const models = lookup.getAvailable();
+		if (!Array.isArray(models)) return fallback;
+		available = models.filter(isModelLike);
+	} catch {
+		return fallback;
+	}
+
+	const separator = modelRef.indexOf("/");
+	if (separator > 0 && separator < modelRef.length - 1) {
+		const provider = modelRef.slice(0, separator);
+		const id = modelRef.slice(separator + 1);
+		return (
+			available.find(
+				(candidate) => candidate.provider === provider && candidate.id === id,
+			) ?? fallback
+		);
+	}
+	if (separator !== -1) return fallback;
+
+	const matches = available
+		.filter((candidate) => candidate.id === modelRef)
+		.sort(compareModels);
+	return (
+		matches.find((candidate) => candidate.provider === fallback.provider) ??
+		matches[0] ??
+		fallback
+	);
+}
+
+export function completionOverrides(config: PolishConfig): CompletionOverrides {
+	return {
+		...(config.thinkingLevel === "off"
+			? {}
+			: { reasoningEffort: config.thinkingLevel }),
+		...(config.fastMode ? { serviceTier: "priority" } : {}),
+	};
+}
+
+type ClipboardWriter = (text: string) => Promise<void>;
+type CopyNotify = (
+	message: string,
+	type?: "info" | "warning" | "error",
+) => void;
+
+const CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
+export const CLIPBOARD_TIMEOUT_MS = 5_000;
+export const MAX_OSC52_ENCODED_LENGTH = 100_000;
+
+export type ClipboardCommand = { command: string; args: string[] };
+type ClipboardNavigator = {
+	clipboard?: { writeText(value: string): Promise<void> };
+};
+type ClipboardSpawn = typeof spawn;
+export type ClipboardFallbackDeps = {
+	env?: Record<string, string | undefined>;
+	navigator?: ClipboardNavigator;
+	platform?: string;
+	timeoutMs?: number;
+	runCommand?: (
+		command: ClipboardCommand,
+		text: string,
+		timeoutMs: number,
+	) => Promise<void>;
+	spawn?: ClipboardSpawn;
+	emitOsc52?: (text: string) => boolean;
+};
+
+export function runClipboardCommand(
+	{ command, args }: ClipboardCommand,
+	text: string,
+	spawnProcess: ClipboardSpawn = spawn,
+	timeoutMs = CLIPBOARD_TIMEOUT_MS,
+): Promise<void> {
+	return new Promise((resolve, reject) => {
+		let child: ReturnType<ClipboardSpawn>;
+		try {
+			child = spawnProcess(command, args, {
+				stdio: ["pipe", "ignore", "ignore"],
+			});
+		} catch (error) {
+			reject(error instanceof Error ? error : new Error(String(error)));
+			return;
+		}
+
+		let settled = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const settle = (finish: () => void) => {
+			if (settled) return;
+			settled = true;
+			if (timer !== undefined) clearTimeout(timer);
+			finish();
+		};
+		const fail = (error: unknown) => {
+			settle(() =>
+				reject(error instanceof Error ? error : new Error(String(error))),
+			);
+		};
+
+		child.once("error", fail);
+		child.once("close", (code) => {
+			if (code === 0) settle(resolve);
+			else
+				settle(() =>
+					reject(
+						new Error(`${command} exited with code ${code ?? "unknown"}`),
+					),
+				);
+		});
+		timer = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			try {
+				child.kill();
+			} catch {
+				// The timeout error remains the useful failure signal.
+			}
+			reject(
+				new Error(
+					`${command} timed out after ${timeoutMs}ms`,
+				),
+			);
+		}, timeoutMs);
+		if (settled) {
+			clearTimeout(timer);
+			return;
+		}
+
+		if (!child.stdin) {
+			try {
+				child.kill();
+			} catch {
+				// Ignore cleanup failure.
+			}
+			fail(new Error(`${command} has no writable stdin`));
+			return;
+		}
+		child.stdin.once("error", fail);
+		child.stdin.end(text);
+	});
+}
+
+function withTimeout<T>(
+	start: () => Promise<T>,
+	timeoutMs: number,
+	operation: string,
+): Promise<T> {
+	return new Promise((resolve, reject) => {
+		let settled = false;
+		const timer = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			reject(new Error(`${operation} timed out after ${timeoutMs}ms`));
+		}, timeoutMs);
+		const finish = (callback: () => void) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			callback();
+		};
+		try {
+			Promise.resolve(start()).then(
+				(value) => finish(() => resolve(value)),
+				(error) =>
+					finish(() =>
+						reject(error instanceof Error ? error : new Error(String(error))),
+					),
+			);
+		} catch (error) {
+			finish(() =>
+				reject(error instanceof Error ? error : new Error(String(error))),
+			);
+		}
+	});
+}
+
+export function emitOsc52(text: string): boolean {
+	const encoded = Buffer.from(text).toString("base64");
+	if (encoded.length > MAX_OSC52_ENCODED_LENGTH) return false;
+	try {
+		process.stdout.write(`\x1b]52;c;${encoded}\x07`);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function isRemoteSession(env: Record<string, string | undefined>): boolean {
+	return Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.MOSH_CONNECTION);
+}
+
+export async function fallbackCopyToClipboard(
+	text: string,
+	deps: ClipboardFallbackDeps = {},
+): Promise<void> {
+	const env = deps.env ?? process.env;
+	const timeoutMs = deps.timeoutMs ?? CLIPBOARD_TIMEOUT_MS;
+	const browserNavigator =
+		deps.navigator ??
+		(
+			globalThis as {
+				navigator?: ClipboardNavigator;
+			}
+		).navigator;
+	let copied = false;
+	let lastError: unknown;
+	if (browserNavigator?.clipboard) {
+		try {
+			await withTimeout(
+				() => browserNavigator.clipboard!.writeText(text),
+				timeoutMs,
+				"navigator.clipboard.writeText",
+			);
+			copied = true;
+		} catch (error) {
+			lastError = error;
+		}
+	}
+
+	const platform = deps.platform ?? process.platform;
+	const commands: ClipboardCommand[] =
+		platform === "darwin"
+			? [{ command: "pbcopy", args: [] }]
+			: platform === "win32"
+				? [{ command: "clip", args: [] }]
+				: platform === "linux"
+					? [
+							...(env.TERMUX_VERSION
+								? [{ command: "termux-clipboard-set", args: [] }]
+								: []),
+							...(env.WAYLAND_DISPLAY
+								? [{ command: "wl-copy", args: [] }]
+								: []),
+							...(env.DISPLAY
+								? [
+										{ command: "xclip", args: ["-selection", "clipboard"] },
+										{ command: "xsel", args: ["--clipboard", "--input"] },
+									]
+								: []),
+						]
+					: [];
+	const runCommand =
+		deps.runCommand ??
+		((command: ClipboardCommand, value: string, deadline: number) =>
+			runClipboardCommand(command, value, deps.spawn, deadline));
+	if (!copied) {
+		for (const command of commands) {
+			try {
+				await runCommand(command, text, timeoutMs);
+				copied = true;
+				break;
+			} catch (error) {
+				lastError = error;
+			}
+		}
+	}
+
+	const emit = deps.emitOsc52 ?? emitOsc52;
+	if (isRemoteSession(env) || !copied) {
+		const encodedLength = Buffer.from(text).toString("base64").length;
+		if (encodedLength <= MAX_OSC52_ENCODED_LENGTH) {
+			try {
+				if (emit(text)) return;
+			} catch (error) {
+				lastError = error;
+			}
+		}
+	}
+	if (copied) return;
+	throw (
+		lastError instanceof Error
+			? lastError
+			: new Error("No supported clipboard utility is available")
+	);
+}
+
+async function loadClipboardWriter(): Promise<ClipboardWriter> {
+	try {
+		const module = (await import(CODING_AGENT_PACKAGE)) as {
+			copyToClipboard?: ClipboardWriter;
+		};
+		if (module.copyToClipboard) return module.copyToClipboard;
+	} catch {
+		// Fall back without making extension startup depend on the root package.
+	}
+	return fallbackCopyToClipboard;
+}
+
+export async function copyPromptText(
+	text: string,
+	notify: CopyNotify,
+	writeClipboard?: ClipboardWriter,
+): Promise<boolean> {
+	try {
+		const write = writeClipboard ?? (await loadClipboardWriter());
+		await write(text);
+		notify("Prompt copied to clipboard", "info");
+		return true;
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		notify(`Prompt copy failed: ${message}`, "error");
+		return false;
+	}
+}
+
+type PreviewTheme = {
+	fg: (color: string, text: string) => string;
+};
+type CopyKeybindings = Pick<KeybindingsManager, "matches">;
+
+function previewButton(
+	label: string,
+	color: (text: string) => string,
+	onClick: () => void,
+): MouseRegion {
+	return new MouseRegion(
+		new Text(color(label), 1, 0),
+		(event) => {
+			if (event.type !== "click" || event.button !== "left")
+				return undefined;
+			onClick();
+			return { handled: true, focus: true, render: true };
+		},
+	);
+}
+
+function frameOverlayLines(
+	lines: readonly string[],
+	width: number,
+	color: (text: string) => string,
+): string[] {
+	const frameWidth = Math.max(1, width);
+	if (frameWidth === 1) return lines.map(() => color("│"));
+	const contentWidth = frameWidth - 2;
+	const padLine = (line: string) => {
+		const content = truncateToWidth(line, contentWidth, "");
+		return `${color("│")}${content}${" ".repeat(
+			Math.max(0, contentWidth - visibleWidth(content)),
+		)}${color("│")}`;
+	};
+	return [
+		color(`╭${"─".repeat(contentWidth)}╮`),
+		...lines.map(padLine),
+		color(`╰${"─".repeat(contentWidth)}╯`),
+	];
+}
+
+export function promptPreviewControl(expanded: boolean): string {
+	return expanded
+		? "[Collapse polished prompt] · Preview: expanded · Ctrl+Shift+E"
+		: "[Expand polished prompt] · Preview: collapsed · Ctrl+Shift+E";
+}
+
+export function promptCopyControl(): string {
+	return "[Copy polished prompt] · Ctrl+Shift+Y";
+}
+
+export function promptHistoryControl(): string {
+	return "[Polish history] · Ctrl+Shift+H";
+}
+
+export class PromptPreviewOverlay {
+	private readonly controls: VStack;
+	private readonly hint: Text;
+	private readonly frameColor: (text: string) => string;
+	readonly scrollView: ScrollView;
+
+	constructor(
+		private readonly tui: TUI,
+		theme: PreviewTheme,
+		text: string,
+		private readonly onClose: () => void,
+		private readonly onCopy: () => void = () => {},
+		private readonly keybindings?: CopyKeybindings,
+	) {
+		this.frameColor = (line: string) => theme.fg("accent", line);
+		this.scrollView = new ScrollView(new Text(text, 1, 0), {
+			axis: "vertical",
+			overscroll: "contain",
+			primary: true,
+			scrollbar: "auto",
+		});
+		this.controls = new VStack([
+			previewButton(
+				promptPreviewControl(true),
+				(text: string) => theme.fg("accent", text),
+				this.onClose,
+			),
+			previewButton(
+				promptCopyControl(),
+				(text: string) => theme.fg("accent", text),
+				this.onCopy,
+			),
+		]);
+		this.hint = new Text(
+			theme.fg(
+				"dim",
+				"Ctrl+Shift+E or Esc to collapse · ↑↓/PgUp/PgDn to scroll",
+			),
+			1,
+			0,
+		);
+	}
+
+	render(width: number): string[] {
+		const contentWidth = Math.max(3, width - 2);
+		const controls = this.controls.render(contentWidth);
+		const hint = this.hint.render(contentWidth);
+		const maxHeight = Math.max(
+			1,
+			Math.min(
+				Math.floor(this.tui.terminal.rows * 0.8),
+				this.tui.terminal.rows - 2,
+			),
+		);
+		const viewportHeight = Math.max(
+			1,
+			maxHeight - controls.length - hint.length - 2,
+		);
+		const scrollLines = this.scrollView.render(contentWidth);
+		this.scrollView.updateLayout(scrollLines.length, viewportHeight, () =>
+			this.tui.requestRender(),
+		);
+		const visibleScrollLines = scrollLines.slice(
+			this.scrollView.scrollTop,
+			this.scrollView.scrollTop + viewportHeight,
+		);
+		return frameOverlayLines(
+			[...controls, ...visibleScrollLines, ...hint],
+			width,
+			this.frameColor,
+		);
+	}
+
+	invalidate(): void {
+		this.controls.invalidate();
+		this.hint.invalidate();
+		this.scrollView.invalidate();
+	}
+
+	handleInput(data: string): void {
+		if (
+			matchesKey(data, COPY_SHORTCUT) ||
+			this.keybindings?.matches(data, "app.message.copy")
+		) {
+			this.onCopy();
+			return;
+		}
+		if (matchesKey(data, PREVIEW_SHORTCUT) || matchesKey(data, Key.escape)) {
+			this.onClose();
+			return;
+		}
+
+		const page = Math.max(1, this.scrollView.viewportHeight - 1);
+		if (matchesKey(data, Key.up)) this.scrollView.scrollBy(-1);
+		else if (matchesKey(data, Key.down)) this.scrollView.scrollBy(1);
+		else if (matchesKey(data, Key.pageUp)) this.scrollView.scrollBy(-page);
+		else if (matchesKey(data, Key.pageDown)) this.scrollView.scrollBy(page);
+		else if (matchesKey(data, Key.home)) this.scrollView.scrollToStart();
+		else if (matchesKey(data, Key.end)) this.scrollView.scrollToEnd();
+		else return;
+		this.tui.requestRender();
+	}
+
+	handleMouse(event: TuiMouseEvent) {
+		if (event.width <= 2 || event.x <= 0 || event.x >= event.width - 1) {
+			return undefined;
+		}
+		if (event.y <= 0 || event.y >= event.height - 1) return undefined;
+		const contentWidth = Math.max(3, event.width - 2);
+		const contentY = event.y - 1;
+		const controlsHeight = this.controls.render(contentWidth).length;
+		const localEvent = {
+			...event,
+			x: event.x - 1,
+			y: contentY,
+			width: event.width - 2,
+			height: Math.max(1, event.height - 2),
+		};
+		if (contentY < controlsHeight) return this.controls.handleMouse(localEvent);
+		return this.scrollView.handleMouse({
+			...localEvent,
+			y: contentY - controlsHeight,
+		});
+	}
+}
+
+function setPromptHistoryWidget(
+	ctx: Pick<ExtensionContext, "ui">,
+	onHistory: () => void,
+): void {
+	ctx.ui.setWidget(
+		PREVIEW_WIDGET,
+		(_tui, theme) =>
+			new VStack([
+				previewButton(
+					promptHistoryControl(),
+					(text: string) => theme.fg("accent", text),
+					onHistory,
+				),
+			]),
+		{ placement: "belowEditor" },
+	);
+}
+
+function setPromptPreviewWidget(
+	ctx: Pick<ExtensionContext, "ui">,
+	expanded: boolean,
+	historyAvailable: boolean,
+	onToggle: () => void,
+	onCopy: () => void,
+	onHistory: () => void,
+): void {
+	ctx.ui.setWidget(
+		PREVIEW_WIDGET,
+		(_tui, theme) =>
+			new VStack([
+				previewButton(
+					promptPreviewControl(expanded),
+					(text: string) =>
+						theme.fg(expanded ? "accent" : "muted", text),
+					onToggle,
+				),
+				previewButton(
+					promptCopyControl(),
+					(text: string) => theme.fg("accent", text),
+					onCopy,
+				),
+				...(historyAvailable
+					? [
+							previewButton(
+								promptHistoryControl(),
+								(text: string) => theme.fg("accent", text),
+								onHistory,
+							),
+						]
+					: []),
+			]),
+		{ placement: "belowEditor" },
+	);
+}
+
+function historyItemLabel(item: PolishHistoryItem): string {
+	const firstLine = item.improved.split(/\r?\n/, 1)[0]?.trim();
+	return firstLine || "(empty polished prompt)";
+}
+
+function historyItemDescription(item: PolishHistoryItem): string {
+	const lineCount = item.improved.split(/\r?\n/).length;
+	return `${lineCount} line${lineCount === 1 ? "" : "s"} · Enter to restore`;
+}
+
+async function showPromptHistory(
+	ctx: Pick<ExtensionContext, "mode" | "ui">,
+	history: readonly PolishHistoryItem[],
+	closeRef: { current?: () => void },
+): Promise<string | null> {
+	if (ctx.mode !== "tui") return null;
+	const items = history.map((item) => ({
+		value: item.improved,
+		label: historyItemLabel(item),
+		description: historyItemDescription(item),
+	}));
+	return ctx.ui.custom<string | null>(
+		(tui, theme, _keybindings, done) => {
+			closeRef.current = () => done(null);
+			const selectList =
+				items.length > 0
+					? new SelectList(items, Math.min(items.length, 7), {
+							selectedPrefix: (text: string) => theme.fg("accent", text),
+							selectedText: (text: string) => theme.fg("accent", text),
+							description: (text: string) => theme.fg("dim", text),
+							scrollInfo: (text: string) => theme.fg("dim", text),
+							noMatch: (text: string) => theme.fg("warning", text),
+						})
+					: undefined;
+			if (selectList) {
+				selectList.onSelect = (item) => done(item.value);
+				selectList.onCancel = () => done(null);
+			}
+			const layout = new VStack([
+				new Text(theme.fg("accent", "Polished prompt history"), 1, 0),
+				selectList ??
+					new Text(
+						theme.fg("dim", "No polished prompts saved in this session."),
+						1,
+						0,
+					),
+				new Text(
+					theme.fg("dim", "↑↓ navigate · Enter restore · Esc close"),
+					1,
+					0,
+				),
+			]);
+			return {
+				render: (width: number) =>
+					frameOverlayLines(
+						layout.render(Math.max(3, width - 2)),
+						width,
+						(text: string) => theme.fg("accent", text),
+					),
+				handleInput: (data: string) => {
+					if (selectList) selectList.handleInput(data);
+					else if (
+						matchesKey(data, Key.escape) ||
+						matchesKey(data, Key.ctrl("c"))
+					)
+						done(null);
+					tui.requestRender();
+				},
+				handleMouse: (event: TuiMouseEvent) => {
+					if (
+						!selectList ||
+						event.width <= 2 ||
+						event.x <= 0 ||
+						event.x >= event.width - 1
+					) {
+						return undefined;
+					}
+					if (event.y <= 0 || event.y >= event.height - 1) return undefined;
+					const result = layout.handleMouse({
+						...event,
+						x: event.x - 1,
+						y: event.y - 1,
+						width: event.width - 2,
+						height: Math.max(1, event.height - 2),
+					});
+					if (result) tui.requestRender();
+					return result;
+				},
+				invalidate: () => layout.invalidate(),
+			};
+		},
+		{
+			overlay: true,
+			overlayOptions: {
+				anchor: "center",
+				margin: 1,
+				width: "70%",
+				maxHeight: "60%",
+			},
+		},
+	);
+}
+
+async function showPromptPreview(
+	ctx: Pick<ExtensionContext, "ui">,
+	text: string,
+	closeRef: { current?: () => void },
+	onCopy: () => void,
+): Promise<void> {
+	if (!text.trim()) return;
+	await ctx.ui.custom<void>(
+		(tui, theme, keybindings, done) => {
+			closeRef.current = done;
+			return new PromptPreviewOverlay(
+				tui,
+				theme,
+				text,
+				done,
+				onCopy,
+				keybindings,
+			);
+		},
+		{
+			overlay: true,
+			overlayOptions: {
+				anchor: "center",
+				margin: 1,
+				width: "90%",
+				maxHeight: "80%",
+			},
+		},
+	);
+}
+
 function completeWithDeadline(
-	runtime: Pick<ModelRuntime, "complete">,
+	runtime: Pick<ExtensionContext["modelRegistry"], "complete">,
 	model: NonNullable<ExtensionContext["model"]>,
 	context: { systemPrompt: string; messages: [UserMessage]; tools: [] },
+	requestOptions: CompletionOverrides,
 	parentSignal: AbortSignal | undefined,
 	timeoutMs: number,
 ): Promise<unknown> {
@@ -484,7 +1260,10 @@ function completeWithDeadline(
 		let request: Promise<unknown>;
 		try {
 			request = Promise.resolve(
-				runtime.complete(model, context, { signal: controller.signal }),
+				runtime.complete(model, context, {
+					...requestOptions,
+					signal: controller.signal,
+				}),
 			);
 		} catch {
 			finish(() => reject(new CompletionFailure("provider")));
@@ -498,9 +1277,10 @@ function completeWithDeadline(
 }
 
 async function completeAttempt(
-	runtime: Pick<ModelRuntime, "complete">,
+	runtime: Pick<ExtensionContext["modelRegistry"], "complete">,
 	model: NonNullable<ExtensionContext["model"]>,
 	context: { systemPrompt: string; messages: [UserMessage]; tools: [] },
+	requestOptions: CompletionOverrides,
 	ctx: Pick<ExtensionContext, "signal">,
 	options: PromptPolishOptions,
 	attempt: number,
@@ -511,6 +1291,7 @@ async function completeAttempt(
 			runtime,
 			model,
 			context,
+			requestOptions,
 			ctx.signal,
 			timeoutMsOf(options.timeoutMs),
 		);
@@ -546,7 +1327,9 @@ export async function polishPrompt(
 ): Promise<string> {
 	if (!ctx.model) throw new Error("No model selected");
 
-	const model = ctx.model;
+	const config = await loadPolishConfig();
+	const model = resolveConfiguredModel(config.model, ctx.model, ctx.modelRegistry);
+	const requestOptions = completionOverrides(config);
 	const boundary =
 		model.provider === "cursor" ? createCursorBoundary() : undefined;
 	const message: UserMessage = {
@@ -571,21 +1354,7 @@ TARGET_MODEL: ${model.provider}/${model.id}`,
 		],
 		timestamp: Date.now(),
 	};
-	const runtimeValue = (ctx.modelRegistry as unknown as { runtime?: unknown })
-		.runtime;
-	if (!isRecord(runtimeValue) || typeof runtimeValue.complete !== "function") {
-		emitDiagnostic(options.logger, model, 1, "error", {
-			valid: false,
-			text: "",
-			contentCount: 0,
-			textCount: 0,
-			toolCallCount: 0,
-			validToolCallCount: 0,
-			boundaryMatched: false,
-		});
-		throw errorForFailure("provider");
-	}
-	const runtime = runtimeValue as Pick<ModelRuntime, "complete">;
+	const runtime = ctx.modelRegistry;
 	const context = {
 		systemPrompt: boundary
 			? cursorSystemPrompt(boundary, false)
@@ -597,6 +1366,7 @@ TARGET_MODEL: ${model.provider}/${model.id}`,
 		runtime,
 		model,
 		context,
+		requestOptions,
 		ctx,
 		options,
 		1,
@@ -625,6 +1395,7 @@ TARGET_MODEL: ${model.provider}/${model.id}`,
 				messages: [message],
 				tools: [],
 			},
+			requestOptions,
 			ctx,
 			options,
 			2,
@@ -694,8 +1465,234 @@ function handleNonToolResponse(
 	throw errorForStop(reason);
 }
 
-export default function (pi: ExtensionAPI) {
+export default function (
+	pi: ExtensionAPI,
+	writeClipboard?: ClipboardWriter,
+) {
 	let running = false;
+	let previewAvailable = false;
+	let polishedPrompt: string | undefined;
+	let history: PolishHistoryItem[] = [];
+	let controlsVisible = false;
+	let submissionVersion = 0;
+	let sessionGeneration = 0;
+	let sessionId: string | undefined;
+	let activeCompletionController: AbortController | undefined;
+	let activeRequestId: number | undefined;
+	let nextRequestId = 0;
+	let persistenceAvailable = true;
+	let persistenceNoticeShown = false;
+	const closePreview: { current?: () => void } = {};
+	const closeHistory: { current?: () => void } = {};
+
+	const renderControls = (ctx: ExtensionContext, expanded = false): void => {
+		if (!controlsVisible || !previewAvailable) return;
+		setPromptPreviewWidget(
+			ctx,
+			expanded,
+			history.length > 0,
+			() => {
+				void togglePreview(ctx);
+			},
+			() => {
+				void copyPolishedPrompt(ctx);
+			},
+			() => {
+				void openHistory(ctx);
+			},
+		);
+	};
+
+	const persistHistoryItem = (
+		ctx: ExtensionContext,
+		original: string,
+		improved: string,
+	): void => {
+		const item: PolishHistoryItem = {
+			original,
+			improved,
+			timestamp: Date.now(),
+		};
+		history = addPolishHistoryItem(history, item);
+		if (!persistenceAvailable) return;
+		try {
+			if (typeof pi.appendEntry !== "function")
+				throw new Error("Pi persistence API unavailable");
+			pi.appendEntry(HISTORY_ENTRY_TYPE, item);
+		} catch {
+			persistenceAvailable = false;
+			if (!persistenceNoticeShown) {
+				persistenceNoticeShown = true;
+				ctx.ui.notify(
+					"Prompt history is memory-only; it could not be saved to this session",
+					"warning",
+				);
+			}
+		}
+	};
+
+	const hidePromptPolishUi = (ctx: ExtensionContext): void => {
+		submissionVersion++;
+		controlsVisible = false;
+		const closePreviewNow = closePreview.current;
+		closePreview.current = undefined;
+		const closeHistoryNow = closeHistory.current;
+		closeHistory.current = undefined;
+		closePreviewNow?.();
+		closeHistoryNow?.();
+		if (history.length > 0)
+			setPromptHistoryWidget(ctx, () => {
+				void openHistory(ctx);
+			});
+		else ctx.ui.setWidget(PREVIEW_WIDGET, undefined);
+	};
+
+	const copyPolishedPrompt = async (ctx: ExtensionContext): Promise<void> => {
+		if (ctx.mode !== "tui") return;
+		if (!previewAvailable || polishedPrompt === undefined) {
+			ctx.ui.notify("Polish a prompt first", "info");
+			return;
+		}
+		await copyPromptText(polishedPrompt, ctx.ui.notify, writeClipboard);
+	};
+
+	const openHistory = async (ctx: ExtensionContext): Promise<void> => {
+		if (ctx.mode !== "tui") return;
+		if (closeHistory.current) {
+			closeHistory.current();
+			return;
+		}
+		let selected: string | null = null;
+		try {
+			selected = await showPromptHistory(ctx, history, closeHistory);
+		} finally {
+			closeHistory.current = undefined;
+		}
+		if (selected === null) return;
+		const item = history.find((entry) => entry.improved === selected);
+		if (!item) return;
+		polishedPrompt = item.improved;
+		previewAvailable = true;
+		controlsVisible = true;
+		ctx.ui.setEditorText(item.improved);
+		renderControls(ctx);
+		ctx.ui.notify("Polished prompt restored", "info");
+	};
+
+	const invalidateActiveCompletion = (ctx: ExtensionContext): void => {
+		sessionGeneration++;
+		activeRequestId = undefined;
+		activeCompletionController?.abort();
+		activeCompletionController = undefined;
+		running = false;
+		if (ctx.mode === "tui") {
+			ctx.ui.setWidget(STATUS, undefined);
+			ctx.ui.setStatus(STATUS, undefined);
+		}
+	};
+
+	const clearSessionState = (ctx: ExtensionContext): void => {
+		invalidateActiveCompletion(ctx);
+		sessionId = undefined;
+		history = [];
+		polishedPrompt = undefined;
+		previewAvailable = false;
+		controlsVisible = false;
+		const closePreviewNow = closePreview.current;
+		closePreview.current = undefined;
+		const closeHistoryNow = closeHistory.current;
+		closeHistory.current = undefined;
+		closePreviewNow?.();
+		closeHistoryNow?.();
+		if (ctx.mode === "tui") ctx.ui.setWidget(PREVIEW_WIDGET, undefined);
+	};
+
+	const restoreSessionState = (ctx: ExtensionContext): void => {
+		clearSessionState(ctx);
+		sessionId = ctx.sessionManager.getSessionId();
+		history = restorePolishHistory(ctx.sessionManager.getBranch());
+		polishedPrompt = history[0]?.improved;
+		previewAvailable = polishedPrompt !== undefined;
+		persistenceAvailable = true;
+		persistenceNoticeShown = false;
+		controlsVisible = ctx.mode === "tui" && previewAvailable;
+		if (controlsVisible) renderControls(ctx);
+	};
+
+	const togglePreview = async (ctx: ExtensionContext): Promise<void> => {
+		if (ctx.mode !== "tui") return;
+		if (!previewAvailable || polishedPrompt === undefined) {
+			ctx.ui.notify("Polish a prompt first", "info");
+			return;
+		}
+		if (closePreview.current) {
+			closePreview.current();
+			return;
+		}
+		controlsVisible = true;
+		const text = polishedPrompt;
+		renderControls(ctx, true);
+		try {
+			await showPromptPreview(
+				ctx,
+				text,
+				closePreview,
+				() => {
+					void copyPromptText(text, ctx.ui.notify, writeClipboard);
+				},
+			);
+		} finally {
+			closePreview.current = undefined;
+			renderControls(ctx);
+		}
+	};
+
+	pi.registerShortcut(PREVIEW_SHORTCUT, {
+		description: "Expand or collapse the polished prompt preview",
+		handler: togglePreview,
+	});
+
+	pi.registerShortcut(COPY_SHORTCUT, {
+		description: "Copy the polished prompt",
+		handler: copyPolishedPrompt,
+	});
+
+	pi.registerShortcut(HISTORY_SHORTCUT, {
+		description: "Restore a polished prompt from session history",
+		handler: openHistory,
+	});
+
+	if (typeof pi.on === "function") {
+		pi.on("session_start", (_event, ctx) => {
+			restoreSessionState(ctx);
+		});
+
+		pi.on("session_tree", (_event, ctx) => {
+			restoreSessionState(ctx);
+		});
+
+		pi.on("session_before_switch", (_event, ctx) => {
+			invalidateActiveCompletion(ctx);
+		});
+
+		pi.on("session_before_fork", (_event, ctx) => {
+			invalidateActiveCompletion(ctx);
+		});
+
+		pi.on("session_before_tree", (_event, ctx) => {
+			invalidateActiveCompletion(ctx);
+		});
+
+		pi.on("session_shutdown", (_event, ctx) => {
+			clearSessionState(ctx);
+		});
+
+		pi.on("input", (_event, ctx) => {
+			if (ctx.mode !== "tui") return { action: "continue" as const };
+			hidePromptPolishUi(ctx);
+			return { action: "continue" as const };
+		});
+	}
 
 	pi.registerShortcut(SHORTCUT, {
 		description: "Improve the prompt in the editor without submitting it",
@@ -711,6 +1708,16 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("Enter a prompt first", "info");
 				return;
 			}
+			const requestVersion = submissionVersion;
+			const requestSessionGeneration = sessionGeneration;
+			const requestSessionId = sessionId;
+			const requestId = ++nextRequestId;
+			const completionController = new AbortController();
+			const parentAbort = () => completionController.abort();
+			if (ctx.signal?.aborted) completionController.abort();
+			else ctx.signal?.addEventListener("abort", parentAbort, { once: true });
+			activeRequestId = requestId;
+			activeCompletionController = completionController;
 			running = true;
 			ctx.ui.setStatus(STATUS, "Improving prompt…");
 			let spinner: ReturnType<typeof setInterval> | undefined;
@@ -730,26 +1737,56 @@ export default function (pi: ExtensionAPI) {
 					frameIndex = (frameIndex + 1) % frames.length;
 					updateWidget();
 				}, 120);
-				const improved = await polishPrompt(original, ctx);
+				const improved = await polishPrompt(original, {
+					...ctx,
+					signal: completionController.signal,
+				});
+				if (
+					requestSessionGeneration !== sessionGeneration ||
+					requestSessionId !== sessionId
+				)
+					return;
+				const editorChanged = ctx.ui.getEditorText() !== original;
 
-				// Never overwrite edits made while the model was working.
-				if (ctx.ui.getEditorText() !== original) {
+				polishedPrompt = improved;
+				previewAvailable = true;
+				persistHistoryItem(ctx, original, improved);
+				if (!editorChanged) ctx.ui.setEditorText(improved);
+				if (requestVersion === submissionVersion) {
+					controlsVisible = true;
+					renderControls(ctx);
+				} else if (history.length > 0) {
+					setPromptHistoryWidget(ctx, () => {
+						void openHistory(ctx);
+					});
+				}
+				if (editorChanged) {
 					ctx.ui.notify(
-						"Editor changed; improved prompt was not applied",
+						"Editor changed; improved prompt was saved to history but not applied",
 						"warning",
 					);
 					return;
 				}
-				ctx.ui.setEditorText(improved);
 				ctx.ui.notify("Prompt improved", "info");
 			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				ctx.ui.notify(`Prompt improvement failed: ${message}`, "error");
+				if (
+					requestSessionGeneration === sessionGeneration &&
+					requestSessionId === sessionId
+				) {
+					const message =
+						error instanceof Error ? error.message : String(error);
+					ctx.ui.notify(`Prompt improvement failed: ${message}`, "error");
+				}
 			} finally {
+				ctx.signal?.removeEventListener("abort", parentAbort);
 				if (spinner) clearInterval(spinner);
-				ctx.ui.setWidget(STATUS, undefined);
-				running = false;
-				ctx.ui.setStatus(STATUS, undefined);
+				if (activeRequestId === requestId) {
+					activeRequestId = undefined;
+					activeCompletionController = undefined;
+					ctx.ui.setWidget(STATUS, undefined);
+					running = false;
+					ctx.ui.setStatus(STATUS, undefined);
+				}
 			}
 		},
 	});

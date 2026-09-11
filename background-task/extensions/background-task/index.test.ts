@@ -123,6 +123,23 @@ test("stops idempotently and escalates a SIGTERM-resistant process group", async
 	}
 });
 
+test("uses System32 taskkill when PATH omits it", async () => {
+	if (process.platform !== "win32") return;
+	const originalPath = process.env.PATH;
+	const instance = manager({ terminationGraceMs: 50, killGraceMs: 500 });
+	try {
+		process.env.PATH = "";
+		const started = await instance.start(
+			nodeCommand("setTimeout(() => {}, 1_000)"),
+			process.cwd(),
+		);
+		expect((await instance.stop(started.id)).state).toBe("stopped");
+	} finally {
+		if (originalPath === undefined) delete process.env.PATH;
+		else process.env.PATH = originalPath;
+	}
+});
+
 test("bounds captured output while continuing to drain it", async () => {
 	const instance = manager({ maxOutputBytes: 128 });
 	const started = await instance.start(

@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export type BackgroundTaskState =
@@ -359,7 +360,7 @@ export class BackgroundTaskManager {
 		if (!pid) throw new Error("process has no PID");
 		if (process.platform === "win32") {
 			const result = spawnSync(
-				"taskkill",
+				join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
 				["/pid", String(pid), "/t", ...(signal === "SIGKILL" ? ["/f"] : [])],
 				{ encoding: "utf8", windowsHide: true },
 			);
