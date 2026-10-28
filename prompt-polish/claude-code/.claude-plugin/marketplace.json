@@ -1,0 +1,6 @@
+{
+  "name": "prompt-polish",
+  "owner": { "name": "joshuaManlunas" },
+  "description": "Marketplace for prompt-polish, a Polish button for Claude Code prompts",
+  "plugins": [{ "name": "prompt-polish", "source": "./" }]
+}

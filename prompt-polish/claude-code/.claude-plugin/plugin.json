@@ -1,0 +1,7 @@
+{
+  "name": "prompt-polish",
+  "version": "0.1.0",
+  "description": "A Polish button above the prompt box that rewrites your draft in place for Claude Code",
+  "author": { "name": "joshuaManlunas" },
+  "types": "./types/index.d.ts"
+}

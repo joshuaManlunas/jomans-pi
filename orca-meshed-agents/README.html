@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orca Meshed Agents · Quick guide</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #faf9f6; --fg: #202523; --muted: #505b55; --panel: #eeefe9; --line: #c6ccc6; --accent: #216044; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #171c19; --fg: #eef1eb; --muted: #bac6bc; --panel: #242c26; --line: #49554b; --accent: #a1dfb7; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 1rem/1.6 system-ui, sans-serif; }
+    main { max-width: 58rem; margin: auto; padding: 2.5rem 1.25rem; }
+    h1 { margin: 0; font-size: clamp(2rem, 5vw, 3rem); line-height: 1.15; }
+    h2 { margin: 2rem 0 .6rem; font-size: 1.35rem; }
+    h3 { margin: 1rem 0 .3rem; font-size: 1rem; }
+    p { margin: .6rem 0; }
+    .intro { color: var(--muted); }
+    code { font-family: ui-monospace, monospace; font-size: .9em; overflow-wrap: anywhere; }
+    pre { margin: .4rem 0 1rem; padding: .8rem 1rem; background: var(--panel); border-left: 3px solid var(--accent); white-space: pre-wrap; overflow-wrap: anywhere; }
+    pre code { font-size: .85rem; }
+    table { width: 100%; border-collapse: collapse; }
+    caption { text-align: left; color: var(--muted); margin-bottom: .5rem; }
+    th, td { text-align: left; padding: .6rem; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+    th { font-weight: 650; }
+    a { color: var(--accent); text-underline-offset: .2em; }
+    a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    footer { margin-top: 2rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Orca Meshed Agents</h1>
+    <p class="intro">A quick guide to standing up a team in Orca.</p>
+    <p>Your current Orca terminal is the orchestrator and owns one orchestration Run. Add an optional advisory Oracle and N workers, each its own supervised worker on that Run, started with <code>orca orchestration worker-start</code>. Every member can message every other member directly through <code>orca orchestration send</code>: members at <code>dispatch:&lt;id&gt;</code>, the orchestrator at <code>run:&lt;id&gt;</code>.</p>
+    <p>Orca only, not Herdr. Orchestration must be enabled in Orca Settings → Experimental. The team reads its role prompts from this skill directory by default.</p>
+  </header>
+
+  <section aria-labelledby="flags">
+    <h2 id="flags">Choose the team</h2>
+    <table>
+      <caption>Invocation flags; worker count excludes you and the Oracle.</caption>
+      <thead><tr><th scope="col">Flag</th><th scope="col">Default</th><th scope="col">Use</th></tr></thead>
+      <tbody>
+        <tr><th scope="row"><code>--workers N</code></th><td><code>4</code></td><td>Positive worker count.</td></tr>
+        <tr><th scope="row"><code>--worker-model agent[:model][,agent[:model]...]</code></th><td><code>codex:gpt-6.1-sol</code></td><td>One selection for all workers, or exactly N selections in worker order. A bare agent uses its configured default model.</td></tr>
+        <tr><th scope="row"><code>--worker-effort L[,L...]</code></th><td>Unset</td><td>Launch effort for workers; needs an explicit model.</td></tr>
+        <tr><th scope="row"><code>--oracle agent[:model]</code></th><td><code>codex:gpt-6-astra</code></td><td>Choose the Oracle independently.</td></tr>
+        <tr><th scope="row"><code>--oracle-effort L</code></th><td>Unset</td><td>Launch effort for the Oracle; needs an explicit model.</td></tr>
+        <tr><th scope="row"><code>--no-oracle</code></th><td>Unset</td><td>Omit the Oracle; mutually exclusive with <code>--oracle</code> and <code>--oracle-effort</code>.</td></tr>
+        <tr><th scope="row"><code>--prompts-dir DIR</code></th><td>This skill directory</td><td>Existing <code>orchestrator.md</code>, <code>workers.md</code>, and, with Oracle, <code>oracle.md</code>.</td></tr>
+      </tbody>
+    </table>
+    <p>A selection is an Orca agent id (<code>claude</code>, <code>codex</code>, <code>cursor</code>, <code>antigravity</code>, <code>muse</code>, <code>opencode</code>, …) and an opaque provider model ID, split at the first colon. Orca has no model listing; it validates agent, model, and effort at launch, and the agent stops rather than substituting when a start is refused or <code>launch.effective</code> differs.</p>
+  </section>
+
+  <section aria-labelledby="examples">
+    <h2 id="examples">Sample usages</h2>
+    <p>Use the <code>/</code> line in Claude Code or the <code>$</code> line in Codex. Enter one line as an agent prompt in an Orca terminal, not as a shell command.</p>
+    <h3>Default: four Codex workers and a Codex Oracle</h3>
+    <pre><code>/orca-meshed-agents
+$orca-meshed-agents</code></pre>
+    <h3>Two mixed workers and a Codex Oracle</h3>
+    <pre><code>/orca-meshed-agents --workers 2 --worker-model codex:gpt-6.1-sol,claude:claude-sonnet-5-5 --oracle codex:gpt-6-astra
+$orca-meshed-agents --workers 2 --worker-model codex:gpt-6.1-sol,claude:claude-sonnet-5-5 --oracle codex:gpt-6-astra</code></pre>
+    <h3>Three workers without an Oracle</h3>
+    <pre><code>/orca-meshed-agents --workers 3 --no-oracle
+$orca-meshed-agents --workers 3 --no-oracle</code></pre>
+    <h3>All-Claude workers and Oracle, Oracle at high effort</h3>
+    <pre><code>/orca-meshed-agents --workers 3 --worker-model claude:claude-sonnet-5-5 --oracle claude:claude-opus-5-5 --oracle-effort high
+$orca-meshed-agents --workers 3 --worker-model claude:claude-sonnet-5-5 --oracle claude:claude-opus-5-5 --oracle-effort high</code></pre>
+    <h3>Maximum: twenty workers, no Oracle</h3>
+    <pre><code>/orca-meshed-agents --workers 20 --no-oracle
+$orca-meshed-agents --workers 20 --no-oracle</code></pre>
+    <p>At most 20 workers. With an Oracle, the maximum is 19 workers. Your current orchestrator terminal is additional and keeps its model, including in the all-Claude example.</p>
+  </section>
+
+  <section aria-labelledby="standup">
+    <h2 id="standup">What standup looks like</h2>
+    <p><strong>Run → plan → worker-start → BOOT_ACK → pairs → matrix → READY.</strong> Each member's tab is renamed <code>&lt;squad&gt; -- &lt;Name&gt; (Worker)</code> or <code>&lt;squad&gt; -- Oracle</code> (Orca otherwise shows <code>worker-&lt;taskId&gt;</code>). Members load their roles, prove direct PING/ACK communication for every pair, then acknowledge READY. Work starts only after a later assignment. With n total members, verification covers n(n−1)/2 pairs.</p>
+    <p>The helper lives beside <code>SKILL.md</code>. With Node.js ≥18, set <code>ORCA_MESH_SKILL_DIR</code> to this skill directory; run data lives under <code>ORCA_MESH_ROOT</code> or <code>/tmp</code>. These are helper commands for the agent, not replacements for the skill:</p>
+    <dl>
+      <dt><code>plan</code> — write the plan and standby files, and print one <code>worker-start</code> command per member.</dt>
+      <dd><pre><code>node "$ORCA_MESH_SKILL_DIR/orca-mesh.mjs" plan --orca-run "$ORCA_RUN_ID" --orca-cli orca</code></pre></dd>
+      <dt><code>bootstrap</code> — validate the saved <code>worker-start</code> receipts and generate roles, roster, tab renames, and send commands.</dt>
+      <dd><pre><code>node "$ORCA_MESH_SKILL_DIR/orca-mesh.mjs" bootstrap --run "$ORCA_MESH_RUN"</code></pre></dd>
+      <dt><code>resend</code> — print a deliberate repeat of one member's protocol message with a fresh retry ID (re-running a saved command only replays it).</dt>
+      <dd><pre><code>node "$ORCA_MESH_SKILL_DIR/orca-mesh.mjs" resend --run "$ORCA_MESH_RUN" --name leia --kind go --round 1</code></pre></dd>
+      <dt><code>matrix</code> — verify recorded pair reports and write the pair matrix.</dt>
+      <dd><pre><code>node "$ORCA_MESH_SKILL_DIR/orca-mesh.mjs" matrix --run "$ORCA_MESH_RUN"</code></pre></dd>
+      <dt><code>selftest</code> — test the helper without launching workers.</dt>
+      <dd><pre><code>node "$ORCA_MESH_SKILL_DIR/orca-mesh.mjs" selftest</code></pre></dd>
+    </dl>
+    <p>The agent binds the Run with <code>orca orchestration run-create</code>, retains run/directory values from <code>plan</code>, and saves each <code>worker-start</code> JSON receipt to the <code>save</code> path in its entry (<code>start-&lt;name&gt;.json</code>). Every mutation carries a stable <code>--retry-request</code> so retries replay instead of duplicating.</p>
+  </section>
+
+  <section aria-labelledby="work">
+    <h2 id="work">After READY</h2>
+    <h3>Assign work to the squad</h3>
+    <pre><code>Use the ready squad to implement the requested change. Assign disjoint files, give each worker acceptance criteria and checks, then review and integrate their results.</code></pre>
+    <h3>Consult the Oracle</h3>
+    <pre><code>Ask the Oracle to critique this implementation plan before we edit. Send the task context and constraints, wait for its result, then decide how to proceed.</code></pre>
+    <h3>Run a task at higher effort</h3>
+    <pre><code>Leia's last attempt was shallow. Start a separate supervised worker for that task with the same model as Leia and a higher --effort, then review its result.</code></pre>
+    <h3>Disband the squad</h3>
+    <pre><code>Disband the squad: have every member send worker_done, then release each worker.</code></pre>
+    <p>Roles are loaded conversationally, not injected as system prompts. Members share your workspace, branch, and checkout, so give them separate file ownership. Orca sets effort only at launch, so a running member's effort cannot be raised in place. Member Dispatches stay active while idle and settle only at disband.</p>
+  </section>
+  <footer><p>Agent procedure: <a href="SKILL.md">SKILL.md</a> · Helper: <a href="orca-mesh.mjs">orca-mesh.mjs</a></p></footer>
+</main>
+</body>
+</html>

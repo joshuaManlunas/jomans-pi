@@ -1,0 +1,11 @@
+{
+  "algorithm": "sha256",
+  "files": {
+    "extensions/prompt-polish/index.ts": "81427def3eacb84072bbbc6f562a0ec320163802445c7b24672ff948b716f88a",
+    "extensions/prompt-polish/config.ts": "7f2cde717bbaf662e6d4e79ff7ef7bfb9530ed5db69ed75d960a57fd5e6f2beb",
+    "extensions/prompt-polish/polish.config.json": "59d7b0fdcdfc33a106d26991f1195156ffeedd820ee02a944232162459b60326",
+    "extensions/prompt-polish/README.md": "d884199cfc2aefefb1ced725d8cb5d4259a2150ff22488cd7257c7bdb75a415d",
+    "extensions/prompt-polish/index.test.ts": "e4c0044b3ec105391a7dc72019767f08300191db0f0691e4bceca7d5b0bf2571",
+    "extensions/prompt-polish/config.test.ts": "66d7888044ae6ae0dab08697fdf56cddc640cffe986527a74d68e98607d33ddf"
+  }
+}

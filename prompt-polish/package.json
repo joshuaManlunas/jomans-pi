@@ -3,18 +3,34 @@
 	"version": "1.0.0",
 	"type": "module",
 	"keywords": [
-		"pi-package"
+		"pi-package",
+		"agent-skill",
+		"prompt-engineering"
 	],
 	"scripts": {
-		"test": "bun test extensions/prompt-polish/index.test.ts"
+		"test": "bun test tests",
+		"test:extension": "bun test extensions/prompt-polish/index.test.ts",
+		"test:skill": "bun test tests",
+		"check:skill": "node scripts/validate.mjs"
 	},
 	"files": [
-		"extensions/"
+		"extensions/",
+		"SKILL.md",
+		"README.md",
+		"references/",
+		"scripts/",
+		"assets/",
+		"tests/*.js"
 	],
 	"pi": {
 		"extensions": [
 			"./extensions/prompt-polish/index.ts"
 		]
+	},
+	"peerDependenciesMeta": {
+		"@earendil-works/pi-coding-agent": { "optional": true },
+		"@earendil-works/pi-ai": { "optional": true },
+		"@earendil-works/pi-tui": { "optional": true }
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": ">=0.84.4",

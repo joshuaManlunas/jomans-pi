@@ -26,6 +26,17 @@ exact generated prompt, including whitespace and line breaks. In the expanded
 view, Pi's configured `app.message.copy` key (default `Ctrl+X`) also copies it.
 Copy success and failure are reported without changing the editor or preview.
 
+## Definition of done
+
+Every polished prompt includes a concrete, task-specific `Done when:`
+criterion that explains how the target model can tell the task is complete.
+Derive it from the user's input and context, not generic boilerplate. If
+success criteria are missing or ambiguous, use reasonable, verifiable
+criteria implied by the request and state anything that could not be
+verified, without inventing facts or requirements. Use one sentence for a
+simple task or a short checklist for multi-part work; add a criterion to an
+already-optimized prompt only if it lacks one.
+
 ## Session history
 
 Successful polished prompts are saved as session-scoped Pi custom entries and

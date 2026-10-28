@@ -953,6 +953,47 @@ test("retries a toolUse without text and accepts stop text", async () => {
 	expect(h.calls[1].context.systemPrompt).toContain("no tools are available");
 });
 
+test("every polishing request requires a task-specific definition of done", async () => {
+	const h = harness([
+		response("toolUse", [toolCall({ query: "secret" })]),
+		response("stop", [text("fallback prompt")]),
+	]);
+	await polishPrompt("original", h.ctx, { logger: () => {} });
+	const cursor = harness(
+		[
+			(calls) => {
+				const { open, close } = cursorBoundaries(calls[0].context.systemPrompt);
+				return response("stop", [text(`${open}cursor prompt${close}`)]);
+			},
+		],
+		undefined,
+		cursorModel,
+	);
+	await polishPrompt("original", cursor.ctx, { logger: () => {} });
+
+	const prompts = [...h.calls, ...cursor.calls].map(
+		(call) => call.context.systemPrompt,
+	);
+	expect(prompts).toHaveLength(3);
+	for (const prompt of prompts) {
+		expect(prompt).toContain('**Define "done" (always required).**');
+		expect(prompt).toContain(
+			'"How can the model determine that this task is complete?"',
+		);
+		expect(prompt).toContain("Derive every\n  criterion from the INPUT PROMPT");
+		expect(prompt).toContain("never generic boilerplate");
+		expect(prompt).toContain(
+			"When success criteria are\n  missing or ambiguous",
+		);
+		expect(prompt).toContain(
+			"without inventing facts, data, requirements, or\n  thresholds",
+		);
+		expect(prompt).toContain(
+			"Contains an explicit, task-specific definition of done",
+		);
+	}
+});
+
 test("reports malformed tool responses after retry without leaking details", async () => {
 	const d = diagnostics();
 	const malformed = response("toolUse", [
