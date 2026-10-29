@@ -78,7 +78,7 @@ $orca-meshed-agents --workers 20 --no-oracle</code></pre>
   <section aria-labelledby="standup">
     <h2 id="standup">What standup looks like</h2>
     <p><strong>Run → plan → worker-start → BOOT_ACK → pairs → matrix → READY.</strong> Each member's tab is renamed <code>&lt;squad&gt; -- &lt;Name&gt; (Worker)</code> or <code>&lt;squad&gt; -- Oracle</code> (Orca otherwise shows <code>worker-&lt;taskId&gt;</code>). Members load their roles, prove direct PING/ACK communication for every pair, then acknowledge READY. Work starts only after a later assignment. With n total members, verification covers n(n−1)/2 pairs.</p>
-    <p>The helper lives beside <code>SKILL.md</code>. With Node.js ≥18, set <code>ORCA_MESH_SKILL_DIR</code> to this skill directory; run data lives under <code>ORCA_MESH_ROOT</code> or <code>/tmp</code>. These are helper commands for the agent, not replacements for the skill:</p>
+    <p>The helper lives beside <code>SKILL.md</code>. With Node.js ≥18, set <code>ORCA_MESH_SKILL_DIR</code> to this skill directory; run data lives in <code>.orca-mesh/</code> at the workspace root (self-ignored by git) unless <code>ORCA_MESH_ROOT</code> overrides it. These are helper commands for the agent, not replacements for the skill:</p>
     <dl>
       <dt><code>plan</code> — write the plan and standby files, and print one <code>worker-start</code> command per member.</dt>
       <dd><pre><code>node "$ORCA_MESH_SKILL_DIR/orca-mesh.mjs" plan --orca-run "$ORCA_RUN_ID" --orca-cli orca</code></pre></dd>

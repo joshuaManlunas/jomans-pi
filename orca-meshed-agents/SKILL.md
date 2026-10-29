@@ -23,7 +23,7 @@ Resolve `ORCA_MESH_SKILL_DIR` to the directory containing this loaded `SKILL.md`
 | `--no-oracle` | Unset | Omit Oracle; mutually exclusive with `--oracle` and `--oracle-effort`. |
 | `--prompts-dir DIR` | This skill directory | Existing `orchestrator.md`, `workers.md`, and, with Oracle, `oracle.md`. |
 
-Split selections at the first colon: `agent` is an Orca agent id enabled on this host (such as `claude`, `codex`, `cursor`, `antigravity`, `muse`, `opencode`), and the remaining text is the exact opaque provider model ID. A bare `agent` omits `--model`, so that member runs its agent's configured default. Never substitute unavailable agents, models, or efforts: Orca has no listing for them and validates at launch, so if `worker-start` refuses one or its receipt's `launch.effective` differs from the request, stop and ask the user. Runs live beneath `$ORCA_MESH_ROOT` or `/tmp`.
+Split selections at the first colon: `agent` is an Orca agent id enabled on this host (such as `claude`, `codex`, `cursor`, `antigravity`, `muse`, `opencode`), and the remaining text is the exact opaque provider model ID. A bare `agent` omits `--model`, so that member runs its agent's configured default. Never substitute unavailable agents, models, or efforts: Orca has no listing for them and validates at launch, so if `worker-start` refuses one or its receipt's `launch.effective` differs from the request, stop and ask the user. Runs live in `.orca-mesh/` at the workspace root (the git root when there is one, else the current directory), which survives reboots and ignores itself via its own `.gitignore`; `$ORCA_MESH_ROOT` overrides that location.
 
 Examples, after resolving the skill directory and binding the Run (run only the requested configuration):
 

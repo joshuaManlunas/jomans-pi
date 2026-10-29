@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -60,9 +60,16 @@ function tabTitle(squad, { name, role }) {
   return squad ? `${squad} -- ${label}` : label;
 }
 
+// Run files live in the squad's workspace (its git root when there is one), not /tmp, so a reboot cannot wipe them.
+function meshRoot() {
+  if (process.env.ORCA_MESH_ROOT) return resolve(process.env.ORCA_MESH_ROOT);
+  const git = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' });
+  return join(git.status === 0 ? git.stdout.trim() : process.cwd(), '.orca-mesh');
+}
+
 function runDir(run) {
   if (!/^orcamesh-\d{14}-[a-f0-9]{4}$/.test(run ?? '')) throw new Error('invalid --run');
-  return join(resolve(process.env.ORCA_MESH_ROOT || '/tmp'), run);
+  return join(meshRoot(), run);
 }
 
 function plan(f) {
@@ -100,7 +107,9 @@ function plan(f) {
   const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
   const run = `orcamesh-${stamp}-${randomBytes(2).toString('hex')}`;
   const dir = runDir(run);
-  mkdirSync(resolve(process.env.ORCA_MESH_ROOT || '/tmp'), { recursive: true });
+  mkdirSync(meshRoot(), { recursive: true });
+  // The default root ignores itself, so git never sees it and the repo's own .gitignore stays untouched.
+  if (!process.env.ORCA_MESH_ROOT) writeFileSync(join(meshRoot(), '.gitignore'), '*\n');
   mkdirSync(dir, { recursive: false });
   // Each non-orchestrator member is a supervised worker on the orchestrator's Run; ids are unknown until start.
   const workerStarts = members.slice(1).map(({ name, role, agent, model, effort, roleFile }) => {
@@ -400,6 +409,24 @@ function selftest() {
     assert.match(colon.workerStarts[1].command, /--spec 'MESH_STANDBY/);
     for (const args of [['--workers', '0'], ['--workers', '20'], ['--worker-model', 'bad agent'], ['--worker-model', 'codex:'], ['--workers', '2', '--worker-model', 'a:b,c:d,e:f'], ['--oracle', 'a:b', '--no-oracle'], ['--worker-model', 'claude', '--worker-effort', 'high'], ['--no-oracle', '--oracle-effort', 'high'], ['--workers', '2', '--worker-effort', 'a,b,c'], ['--squad', 'a\nb'], ['--squad', 'x'.repeat(41)]]) cli(['plan', '--orca-run', 'run_test', '--prompts-dir', prompts, ...args], 1);
     cli(['plan', '--prompts-dir', prompts], 1);
+    // Without ORCA_MESH_ROOT, runs land in <workspace>/.orca-mesh: the git root when there is one, else the cwd.
+    const { ORCA_MESH_ROOT: _, ...bareEnv } = process.env;
+    const planIn = (cwd) => {
+      const result = spawnSync(process.execPath, [script, 'plan', '--orca-run', 'run_test', '--prompts-dir', prompts], { cwd, encoding: 'utf8', env: bareEnv });
+      assert.equal(result.status, 0, result.stderr);
+      checks++;
+      return JSON.parse(result.stdout).dir;
+    };
+    const folder = realpathSync(mkdtempSync(join(root, 'folder-')));
+    assert.equal(dirname(planIn(folder)), join(folder, '.orca-mesh'));
+    assert.equal(readFileSync(join(folder, '.orca-mesh', '.gitignore'), 'utf8'), '*\n');
+    if (spawnSync('git', ['--version']).status === 0) {
+      const repo = realpathSync(mkdtempSync(join(root, 'repo-')));
+      assert.equal(spawnSync('git', ['init', '-q', repo]).status, 0);
+      mkdirSync(join(repo, 'sub'));
+      assert.equal(dirname(planIn(join(repo, 'sub'))), join(repo, '.orca-mesh'));
+      assert.equal(spawnSync('git', ['-C', repo, 'status', '--porcelain'], { encoding: 'utf8' }).stdout, '');
+    }
     const planned = makePlan('--workers', '10');
     const starts = readJson(join(planned.dir, 'plan.json')).members.slice(1);
     const receipts = starts.map((m, i) => ({ runId: 'run_test', taskId: `task_${i}`, dispatchId: `dispatch_${i}`, state: 'ready', launch: { requested: { agent: m.agent, model: m.model, effort: null }, effective: { agent: m.agent, model: m.model, effort: null } }, effects: [{ kind: 'terminal', role: 'agent', id: `term_${i}` }] }));
