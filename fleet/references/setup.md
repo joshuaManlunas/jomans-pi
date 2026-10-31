@@ -46,7 +46,9 @@ The worker profile lives in two places:
      and `claudeCode.maxThinking`.
    - Codex/Pi: `config.json` `model`, `provider`, and `thinking`.
 6. **Apply.** Edit only those lines and fields; every other byte stays as it
-   was. Afterwards, re-read the files and confirm that all of the worker files
+   was. These files may be symlinks into a git checkout: edit them in place
+   with a file-edit tool, not `sed -i`, which replaces a link with a copy.
+   Afterwards, re-read the files and confirm that all of the worker files
    and `claudeCode.model` name the same model and that `config.json` is still
    valid JSON.
 7. **Report.** List what changed. For Claude Code changes, tell the user that
