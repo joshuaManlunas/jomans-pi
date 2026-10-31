@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const installer = fileURLToPath(new URL("../scripts/install.mjs", import.meta.url));
-const workers = ["fleet-worker-high.md", "fleet-worker-low.md", "fleet-worker-medium.md", "fleet-worker-xhigh.md"];
+const workers = ["fleet-worker-high.md", "fleet-worker-low.md", "fleet-worker-max.md", "fleet-worker-medium.md", "fleet-worker-xhigh.md"];
 const install = (...args) => spawnSync(process.execPath, [installer, ...args], { cwd: tmpdir(), encoding: "utf8" });
 
 async function withTemp(fn) {

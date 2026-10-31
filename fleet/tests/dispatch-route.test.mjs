@@ -52,8 +52,22 @@ test("worker profile is complete and setup-editable", () => {
   }
   assert.ok(!config.model.startsWith(`${config.provider}/`));
   assert.equal(config.contextWindow, undefined);
-  assert.deepEqual(Object.keys(config.claudeCode.workers), ["low", "medium", "high", "xhigh"]);
+  assert.deepEqual(Object.keys(config.claudeCode.workers), ["low", "medium", "high", "xhigh", "max"]);
   assert.ok(config.claudeCode.maxThinking in config.claudeCode.workers);
+  const { delegate } = config.claudeCode;
+  if (delegate !== undefined) {
+    assert.deepEqual(Object.keys(delegate).sort(), ["effortOption", "model", "providerInstanceId"]);
+    for (const value of Object.values(delegate)) assert.ok(typeof value === "string" && value.length > 0);
+  }
+});
+
+test("Claude Code dispatch documents the T3 Code delegate route without an Agent fallback", () => {
+  assert.ok(skill.includes("#### T3 Code delegate"));
+  assert.ok(skill.includes("`delegate_task`"));
+  assert.ok(skill.includes("`orchestrator_capabilities` once before the first dispatch"));
+  assert.ok(skill.includes("Agent workers are not a fallback"));
+  assert.ok(skill.includes("Never exceed\n  `claudeCode.maxThinking`"));
+  assert.ok(skill.includes("Do not run Fleet or delegate"));
 });
 
 test("setup mode is detected before dispatch and links its reference", () => {

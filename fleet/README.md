@@ -4,7 +4,9 @@ An [Agent Skill](https://agentskills.io/specification) that makes the invoking
 agent an orchestrator: it scopes a task, dispatches workers, reviews their
 results, and synthesizes them. It routes through Orca orchestration in an
 Orca-managed Pi session, and native subagents everywhere else. In Claude Code,
-workers are the four `fleet-worker-*` agent definitions in `claude-code/agents/`.
+workers are the `fleet-worker-*` agent definitions in `claude-code/agents/`,
+or, in T3 Code, any model T3 offers through `delegate_task` when
+`claudeCode.delegate` is set.
 
 ## Install
 
@@ -26,8 +28,8 @@ session afterwards.
   and effort, then updates `config.json` and the worker definitions.
 
 The worker profile is `config.json` (Codex/Pi: `model`, `provider`,
-`thinking`; Claude Code: `claudeCode`) together with the installed
-`fleet-worker-*.md` files.
+`thinking`; Claude Code: `claudeCode`, including the optional `delegate`)
+together with the installed `fleet-worker-*.md` files.
 
 ## Development
 

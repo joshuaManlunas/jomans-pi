@@ -10,14 +10,18 @@ The worker profile lives in two places:
 - **Claude Code**: the `model:` and `description:` frontmatter of each agent
   named in `config.json` → `claudeCode.workers` (in `~/.claude/agents/`). The
   `claudeCode.maxThinking` field caps the worker effort. `claudeCode.model`
-  mirrors the agent files and is not read during dispatch.
+  mirrors the agent files and is not read during dispatch. In T3 Code, an
+  optional `claudeCode.delegate` (`providerInstanceId`, `model`,
+  `effortOption`) sends workers to that model through `delegate_task` in
+  place of the agent files.
 - **Codex / Pi**: the top-level `model`, `provider`, and `thinking` fields of
   `config.json`.
 
 ## Steps
 
 1. **Read the current profile.** Read `config.json` and every worker agent
-   file. Show the user the current Claude Code model and `maxThinking`, and
+   file. Show the user the current Claude Code model, any `claudeCode.delegate`,
+   and `maxThinking`, and
    the current Codex/Pi `provider`/`model` and `thinking`. If the agent files
    disagree with each other or with `claudeCode.model`, point that out. A
    missing worker file is a blocker: report it and stop.
@@ -27,23 +31,34 @@ The worker profile lives in two places:
 3. **Pick the model.** For each chosen profile, ask which model to use. Put
    the current model first, and allow a free-form answer.
    - Claude Code: offer the latest Claude model IDs from your environment
-     info. Accept only a full model ID such as `claude-opus-5-5`. Reject
-     aliases (`sonnet`, `opus`) and the `[1m]` suffix, and ask again.
+     info. A Claude model needs a full model ID such as `claude-opus-5-5`.
+     Reject aliases (`sonnet`, `opus`) and the `[1m]` suffix, and ask again.
+     Choosing a Claude model goes in the agent files and removes
+     `claudeCode.delegate`.
+   - Claude Code with a non-Claude model: this needs T3 Code's
+     `orchestrator_capabilities`; without it, explain that the agent files
+     only accept Claude models and ask again. Search it for the model, and if
+     more than one provider instance offers it, ask which one to use. Record
+     that `providerInstanceId`, the model `id`, and the `id` of the model's
+     effort option (for example `reasoningEffort`) as `claudeCode.delegate`.
+     Leave the agent files as they are.
    - Codex/Pi: ask for the model and its provider together, defaulting to the
      current provider. Store `model` without the provider prefix. Pi's
      selector is `<provider>/<model>`.
 4. **Pick the effort.** Ask only where the profile uses it, with the current
    value first.
    - Claude Code: `maxThinking`, which must be one of the `claudeCode.workers`
-     keys.
+     keys. With a delegate, it must also be one of the effort option's
+     values.
    - Codex/Pi: `thinking`, which must be an effort level the runtime accepts.
 5. **Show the changes.** List every file and field you will change, with its
    old and new value:
    - Claude Code: in each worker file, `model:` and the model name in
      `description:`. For example, `claude-opus-5-5` gives
      `Fleet worker (Claude Opus 5.5, high effort)`; keep each file's own
-     effort. In `config.json`, `claudeCode.model` (set to the new model ID)
-     and `claudeCode.maxThinking`.
+     effort. In `config.json`, `claudeCode.model` (set to the agent files'
+     model ID), `claudeCode.delegate` (added, changed, or removed), and
+     `claudeCode.maxThinking`.
    - Codex/Pi: `config.json` `model`, `provider`, and `thinking`.
 6. **Apply.** Edit only those lines and fields; every other byte stays as it
    was. These files may be symlinks into a git checkout: edit them in place

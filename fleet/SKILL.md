@@ -94,9 +94,11 @@ Claude Code sets the `CLAUDECODE` environment variable. Before dispatching,
 check it with `printenv CLAUDECODE`. When it is non-empty, use
 `config.json` → `claudeCode` in place of the profile above:
 
-- Dispatch with the `Agent` tool and `subagent_type` set to one of the
-  `claudeCode.workers` definitions in `~/.claude/agents/`. Each one pins
-  its worker model in `model:` and a fixed `effort`.
+- When `claudeCode.delegate` is set, dispatch through T3 Code as described in
+  the next subsection. Otherwise, dispatch with the `Agent` tool and
+  `subagent_type` set to one of the `claudeCode.workers` definitions in
+  `~/.claude/agents/`. Each one pins its worker model in `model:` and a fixed
+  `effort`.
 - Omit the Agent tool's `model` parameter. A per-call `model` overrides the
   worker definition, and the `sonnet` alias can resolve to an older model on
   other providers.
@@ -107,11 +109,33 @@ check it with `printenv CLAUDECODE`. When it is non-empty, use
   - `high` for multi-file changes or unclear debugging.
   - `xhigh` for subtle correctness, concurrency, security, or architecture
     work.
+  - `max` for the hardest assignments, such as a retry after an `xhigh`
+    worker fell short.
 
   Never exceed `claudeCode.maxThinking`. Record the chosen level in the
   Dispatch output.
 - Codex-only fields (`reasoning_effort`, `fork_turns`, the `[1m]` suffix) do
   not apply. If a worker definition is missing, report that blocker.
+
+#### T3 Code delegate
+
+`claudeCode.delegate` holds `providerInstanceId`, `model`, and `effortOption`.
+When it is set, dispatch every worker with T3 Code's `delegate_task` in place
+of the `Agent` tool. If `delegate_task` is unavailable, report the blocker;
+Agent workers are not a fallback.
+
+- Call `orchestrator_capabilities` once before the first dispatch and confirm
+  that `providerInstanceId` offers `model`. If it doesn't, report the blocker.
+- Pass `target: { providerInstanceId, model, options: { <effortOption>: <level> } }`,
+  picking the level per assignment from the effort guide above. Never exceed
+  `claudeCode.maxThinking`.
+- Open each `task` with this charter: "You are a Fleet worker. Complete
+  exactly this assignment: discover, implement, and verify within its scope.
+  Do not run Fleet or delegate. Return what you changed, the evidence it
+  works, and any blocker."
+- Keep the default isolation and runtime mode. Launch independent workers
+  together in async mode, then follow each result's `next` guidance to
+  collect them. Record each `taskId` and level in the Dispatch output.
 
 ## Workflow
 
@@ -119,7 +143,7 @@ check it with `printenv CLAUDECODE`. When it is non-empty, use
 
 2. **Decompose** — Parallelize independent workstreams; queue dependents until prerequisites exist. One worker per workstream; queue overflow as slots free. Workers must not run Fleet or spawn sub-workers.
 
-3. **Dispatch** — Use only the selected runtime route: Orca dispatch per `references/orca.md`, or native `spawn_agent` (Claude Code: `Agent` with a Fleet worker `subagent_type`). Give self-contained prompts (goal, scope, constraints, success check, return path). On the native route, pass configured model, reasoning, and fork on every call (in Claude Code, the worker definition carries them). Launch independent workers together; record worker IDs before deep work.
+3. **Dispatch** — Use only the selected runtime route: Orca dispatch per `references/orca.md`, or native `spawn_agent` (Claude Code: `Agent` with a Fleet worker `subagent_type`, or `delegate_task` when `claudeCode.delegate` is set). Give self-contained prompts (goal, scope, constraints, success check, return path). On the native route, pass configured model, reasoning, and fork on every call (in Claude Code, the worker definition carries them). Launch independent workers together; record worker IDs before deep work.
 
 4. **Coordinate** — Hub-and-spoke through the orchestrator: wait, answer questions, deliver prerequisites, follow up on weak or failed work.
 

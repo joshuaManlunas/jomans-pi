@@ -3,13 +3,19 @@
   "provider": "openrouter",
   "thinking": "medium",
   "claudeCode": {
-    "model": "claude-haiku-5-5[1m]",
-    "maxThinking": "xhigh",
+    "model": "claude-sonnet-5-5",
+    "maxThinking": "max",
     "workers": {
       "low": "fleet-worker-low",
       "medium": "fleet-worker-medium",
       "high": "fleet-worker-high",
-      "xhigh": "fleet-worker-xhigh"
+      "xhigh": "fleet-worker-xhigh",
+      "max": "fleet-worker-max"
+    },
+    "delegate": {
+      "providerInstanceId": "codex",
+      "model": "gpt-6.1-terra",
+      "effortOption": "reasoningEffort"
     }
   }
 }
