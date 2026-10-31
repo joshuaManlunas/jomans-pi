@@ -1,0 +1,5 @@
+interface:
+  display_name: "Fleet"
+  short_description: "Plan, dispatch parallel subagents, synthesize"
+policy:
+  allow_implicit_invocation: false
