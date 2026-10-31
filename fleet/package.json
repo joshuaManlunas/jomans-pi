@@ -1,0 +1,22 @@
+{
+	"name": "fleet",
+	"version": "1.0.0",
+	"type": "module",
+	"keywords": [
+		"agent-skill",
+		"orchestration"
+	],
+	"scripts": {
+		"test": "node --test tests/*.test.mjs"
+	},
+	"files": [
+		"SKILL.md",
+		"README.md",
+		"config.json",
+		"agents/",
+		"references/",
+		"scripts/",
+		"tests/",
+		"claude-code/"
+	]
+}

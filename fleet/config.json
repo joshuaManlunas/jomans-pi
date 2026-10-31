@@ -1,0 +1,15 @@
+{
+  "model": "moonshotai/kimi-k3.1-pro",
+  "provider": "openrouter",
+  "thinking": "medium",
+  "claudeCode": {
+    "model": "claude-haiku-5-5[1m]",
+    "maxThinking": "xhigh",
+    "workers": {
+      "low": "fleet-worker-low",
+      "medium": "fleet-worker-medium",
+      "high": "fleet-worker-high",
+      "xhigh": "fleet-worker-xhigh"
+    }
+  }
+}
