@@ -90,6 +90,11 @@ function check(c, reply) {
 }
 
 const only = process.argv.slice(2);
+const unknown = only.filter(name => !CASES.some(c => c.name === name));
+if (unknown.length) {
+  console.error(`Unknown case: ${unknown.join(', ')}. Cases: ${CASES.map(c => c.name).join(', ')}`);
+  process.exit(2);
+}
 const selected = only.length ? CASES.filter(c => only.includes(c.name)) : CASES;
 const results = await Promise.all(selected.map(async c => {
   try {
