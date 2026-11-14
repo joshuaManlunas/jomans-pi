@@ -24,9 +24,9 @@ async function withConfigFile<T>(raw: string, callback: (url: URL) => Promise<T>
 
 test("exports and loads the exact module-relative defaults", async () => {
 	expect(DEFAULT_POLISH_CONFIG).toEqual({
-		model: "gpt-5.6-sol",
+		model: "openrouter/anthropic/claude-opus-5.5",
 		thinkingLevel: "high",
-		fastMode: true,
+		fastMode: false,
 	});
 	expect(THINKING_LEVELS).toEqual([
 		"off",
@@ -48,14 +48,14 @@ test("keeps valid partial settings and fills missing fields independently", () =
 	).toEqual({
 		model: "custom-model",
 		thinkingLevel: "high",
-		fastMode: true,
+		fastMode: false,
 	});
 	expect(
-		parsePolishConfig(JSON.stringify({ thinkingLevel: "xhigh", fastMode: false })),
+		parsePolishConfig(JSON.stringify({ thinkingLevel: "xhigh", fastMode: true })),
 	).toEqual({
-		model: "gpt-5.6-sol",
+		model: "openrouter/anthropic/claude-opus-5.5",
 		thinkingLevel: "xhigh",
-		fastMode: false,
+		fastMode: true,
 	});
 });
 
@@ -70,7 +70,7 @@ test("falls back independently for invalid types and values", () => {
 			JSON.stringify({ model: "  ", thinkingLevel: "low", fastMode: false }),
 		),
 	).toEqual({
-			model: "gpt-5.6-sol",
+			model: "openrouter/anthropic/claude-opus-5.5",
 			thinkingLevel: "low",
 			fastMode: false,
 		});

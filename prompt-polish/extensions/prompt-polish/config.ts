@@ -19,9 +19,9 @@ export type PolishConfig = {
 };
 
 export const DEFAULT_POLISH_CONFIG: Readonly<PolishConfig> = Object.freeze({
-	model: "gpt-5.6-sol",
+	model: "openrouter/anthropic/claude-opus-5.5",
 	thinkingLevel: "high",
-	fastMode: true,
+	fastMode: false,
 });
 
 export const POLISH_CONFIG_URL = new URL("./polish.config.json", import.meta.url);
