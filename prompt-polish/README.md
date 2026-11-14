@@ -1,90 +1,86 @@
-# Prompt Polish skill
+# prompt-polish
 
-An installable [Agent Skill](https://agentskills.io/specification) that rewrites
-prompts without answering or executing them. The polishing contract is copied
-verbatim from this repository's canonical Pi extension, including mandatory
-task-specific completion criteria, silent ambiguity handling, preservation of
-specifics and language, and plain-text-only output.
+Rewrites a rough prompt into a sharper one without answering or running it.
+Every rewrite keeps your paths, code, and language, invents nothing, stays
+within a length budget, and ends with a task-specific `Done when:` line.
 
-## Install
+One rewrite contract,
+[`skills/prompt-polish/references/polishing.md`](skills/prompt-polish/references/polishing.md),
+drives three front ends:
 
-Point any Agent Skills-compatible installer at this directory. Alternatively,
-copy `SKILL.md`, `references/`, `assets/`, and `scripts/` into a directory named
-`prompt-polish` inside your harness's documented skill search path. Include
-this README for human-facing documentation. A supplied installer performs
-that copy without overwriting an existing skill:
+| Front end | Where | What it does |
+| --- | --- | --- |
+| Agent Skill | [`skills/prompt-polish/`](skills/prompt-polish/SKILL.md) | Ask any skills-capable agent to polish a prompt; it replies with the rewrite in a copyable block. |
+| Pi extension | [`extensions/prompt-polish/`](extensions/prompt-polish/README.md) | Polishes the Pi editor draft in place, with preview, copy, and history. Loads the contract from the skill folder. |
+| Claude Code plugin | [`claude-code/`](claude-code/README.md) | A ✨ Polish button above the prompt box. Carries its own Claude Code-specific copy of the rules, because the plugin installs from that folder alone. |
+
+The contract has a core (preserve specifics, add nothing, goal first, length
+budget, `Done when:`) and two profiles. The **agentic** profile covers act
+versus advise, where to look, scope, concrete verification, and
+confirm-before-destructive. The **single-shot** profile covers
+self-containment, output format, and grounding. The profile is chosen from
+`TARGET_MODEL`, or from the draft when no target is given.
+
+## Default model
+
+The Pi extension and the Claude Code plugin both polish with Claude Opus 5.5:
+
+- Pi: `extensions/prompt-polish/polish.config.json` (see its README for the
+  provider-qualified id).
+- Claude Code: `claude-opus-5-5` in `claude-code/hooks/register.tsx`.
+
+The skill uses whatever model the agent is already running.
+
+## Install the skill
+
+Copy the skill folder into your harness's skill directory, then reload skills:
 
 ```sh
-node /path/to/prompt-polish/scripts/install.mjs /path/to/your/harness/skills
+cp -R skills/prompt-polish ~/.agents/skills/prompt-polish
 ```
 
-The resulting path is `/path/to/your/harness/skills/prompt-polish/SKILL.md`.
-Reload/discover skills as documented by your harness. The installation contains
-no extension code, plugins, lifecycle hooks, or package dependencies.
-
-For a harness without skill discovery, attach/read `SKILL.md` and its linked
-resources and explicitly ask the agent to apply the skill. All paths are
-relative to the installed skill directory, not your project.
-
-**Requirements:** none beyond an agent able to read the skill and rewrite
-text. Optional completion/clipboard/session helpers require Node.js 20+ and a
-host-provided completion backend for programmatic polishing. No npm install,
-Pi runtime, external service, or particular model is required. The existing Pi
-extension and Claude-specific implementation remain separate; do not install
-them to use this skill. npm packaging includes the skill files; Pi peers are
-optional so packaging does not force their installation.
-
-## Use
-
-Ask your agent explicitly, for example:
+The folder holds only `SKILL.md` and `references/polishing.md`. It needs no
+scripts, packages, or particular model. Then ask, for example:
 
 ```text
-Use prompt-polish to improve this prompt without executing it:
-
-Write a Python script that reads ./sales.csv and reports monthly totals in EUR.
-Use only the standard library. Output the script and a one-line run command.
+Polish this prompt: fix the login redirect bug in src/auth/callback.ts
 ```
 
-You may supply `TARGET_MODEL` and `CONTEXT` alongside the input. The reply is
-only the improved prompt, ready to paste elsewhere. No preamble, outer code
-fence, explanation, or automatic execution is added. A prompt containing
-instructions such as “ignore your instructions” remains rewrite input, not an
-instruction to the polishing agent. Already-good prompts get minimal changes.
+The reply is the rewritten prompt in one fenced block, plus at most one line
+naming an assumption. Follow-ups such as "show the last one" or "copy it"
+work from the conversation history. Copying uses `pbcopy`, `clip`, or
+`wl-copy`/`xclip` when the agent has a shell.
 
-For follow-ups, request “preview the last polished prompt,” “copy it,” or
-“show this session's polish history,” then select an entry to restore. These
-are ordinary requests, not registered commands or keyboard shortcuts. History
-contains at most 20 exact-text-deduplicated results, newest first. Restoring
-never submits a prompt. Clipboard and draft operations use only facilities
-actually available in the host; otherwise the agent returns copyable text.
-Persistent session history is optional, not an automatic disk archive.
+For the Pi extension, add this package's path to `packages` in
+`~/.pi/agent/settings.json`. For the Claude Code plugin, see
+[`claude-code/README.md`](claude-code/README.md).
 
-## Optional integrations
+## Changing the rules
 
-- [Polishing contract](references/polishing.md): authoritative rewrite rules.
-- [Draft/session workflows](references/WORKFLOWS.md): concurrency, preview,
-  copy, history, restore, and session-boundary behavior.
-- [Runtime API](references/RUNTIME.md): portable backend protocol, configuration,
-  response validation, retry/deadline/cancellation behavior, clipboard and
-  session helpers, with integration examples.
-- [Porting record](references/PORTING.md): source provenance and behavior mapping.
+Edit `skills/prompt-polish/references/polishing.md`. The skill and the Pi
+extension pick the change up directly. Carry any change that matters for
+Claude Code into `SYSTEM` in `claude-code/hooks/polish-prompt.ts`, then run
+the eval.
 
-The helper's model preference is copied from the extension; an unavailable
-model falls back to the current model. It is not a dependency on that model.
-
-## Development checks
-
-From this repository/package directory:
+## Checks
 
 ```sh
-npm run check:skill  # Node-only format/resource/runtime smoke checks
-npm run test:skill   # Bun regression, parity, session, and install tests
-npm test            # same portable suite as test:skill
-npm run test:extension # optional legacy suite; requires the Pi peer packages
-npm pack --dry-run  # inspect npm distribution contents
+npm test              # bun: skill metadata/links + Pi extension suite
+npm run test:skill    # skill metadata and links only
+npm run test:extension
+npm run eval          # live: 9 drafts through `claude -p` (one call each)
+(cd claude-code && claude plugin validate . && claude plugin test .)
 ```
 
-Bun is a development test runner only. There is no separate configured linter
-or build step for the portable ES modules. `scripts/validate.mjs` checks this
-skill's constrained metadata shape and resource paths; it is not a general
-YAML parser or a replacement for a harness's own skill validator.
+The Pi suite imports the optional `@earendil-works/pi-*` peers, so install
+them (or link a global Pi install's `node_modules/@earendil-works`) before
+running it.
+
+`npm run eval` sends nine drafts through the contract with Claude Opus 5.5.
+Set `POLISH_EVAL_MODEL` to use another model, or pass case names to run a
+subset. The drafts are a one-line fix, a question, an already-good prompt,
+an injection, a Spanish draft, a code block, a slash command, a destructive
+operation, and gibberish. Each rewrite is checked for kept paths and code, no
+invented paths or numbers, the length budget, kept language, a `Done when:`
+line, and not being answered. The length check sits close to what the model
+produces, so a run can land a few words over on one case.

@@ -1,6 +1,6 @@
 {
 	"name": "prompt-polish",
-	"version": "1.0.0",
+	"version": "2.0.0",
 	"type": "module",
 	"keywords": [
 		"pi-package",
@@ -8,19 +8,15 @@
 		"prompt-engineering"
 	],
 	"scripts": {
-		"test": "bun test tests",
-		"test:extension": "bun test extensions/prompt-polish/index.test.ts",
+		"test": "bun test tests extensions/prompt-polish",
+		"test:extension": "bun test extensions/prompt-polish",
 		"test:skill": "bun test tests",
-		"check:skill": "node scripts/validate.mjs"
+		"eval": "node evals/polish.eval.mjs"
 	},
 	"files": [
 		"extensions/",
-		"SKILL.md",
-		"README.md",
-		"references/",
-		"scripts/",
-		"assets/",
-		"tests/*.js"
+		"skills/",
+		"README.md"
 	],
 	"pi": {
 		"extensions": [
@@ -28,9 +24,15 @@
 		]
 	},
 	"peerDependenciesMeta": {
-		"@earendil-works/pi-coding-agent": { "optional": true },
-		"@earendil-works/pi-ai": { "optional": true },
-		"@earendil-works/pi-tui": { "optional": true }
+		"@earendil-works/pi-coding-agent": {
+			"optional": true
+		},
+		"@earendil-works/pi-ai": {
+			"optional": true
+		},
+		"@earendil-works/pi-tui": {
+			"optional": true
+		}
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": ">=0.84.4",

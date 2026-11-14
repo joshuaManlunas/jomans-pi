@@ -24,6 +24,21 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect(filled).toBe('Fix the login bug.\n\nDone when: login works.')
     })
 
+    // A reply without tags (an answer, a refusal) or with empty tags (not a prompt) must not touch the draft.
+    for (const reply of ['Sure! The login bug is in auth.ts; change line 12.', '<polished>  </polished>']) {
+      test(`reply ${JSON.stringify(reply.slice(0, 20))} leaves the draft alone`, async ($, on) => {
+        let filled = false
+        on('prompt.read', () => ({ value: { text: 'fix login bug', cursor: 13 } }))
+        on('model.complete', () => ({ value: { isAnswered: true, text: reply, usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }))
+        on('prompt.fill', (_$, e) => { filled = true; return { isFilled: true, text: e.text, cursor: 0 } })
+
+        const ui = await $.ui.mount({ plugin: 'prompt-polish', surface, component: 'AbovePrompt', props })
+        await ui.press({ key: 'polish' })
+
+        expect(filled).toBe(false)
+      })
+    }
+
     test('empty draft is left alone', async ($, on) => {
       let filled = false
       on('prompt.read', () => ({ value: { text: '  ', cursor: 0 } }))

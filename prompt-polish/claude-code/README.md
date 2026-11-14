@@ -4,7 +4,7 @@ Write a rough prompt, press **✨ Polish prompt**, and get back a clearer
 version in the same box, ready to edit or send.
 
 prompt-polish adds a button just above Claude Code's prompt box. Pressing it
-sends your draft to Claude Sonnet, which rewrites it the way Claude Code
+sends your draft to Claude Opus 5.5, which rewrites it the way Claude Code
 works best with:
 
 - the goal stated up front, and whether Claude should make changes or just
@@ -73,7 +73,12 @@ Good to know:
 
 - **Your edits are safe.** If you change the draft while it's being
   polished, the plugin leaves your text alone and tells you so.
-- **An empty box does nothing** except show "Nothing to polish".
+- **An empty box does nothing** except show "Nothing to polish". A draft
+  that isn't a prompt at all (random characters, an accidental paste) is
+  also left alone.
+- **Only a real rewrite replaces your draft.** If the model's reply doesn't
+  contain a rewritten prompt (an answer, a refusal, a stray note), your draft
+  stays as it was and a toast says so.
 - **Slash commands stay first.** A draft starting with `/review` or another
   command keeps it, unchanged, at the start.
 - **Your language and voice are kept.** A draft in another language stays in
@@ -86,7 +91,7 @@ Good to know:
 
 ## Privacy and cost
 
-Each polish makes one request to Claude Sonnet through your own Claude Code
+Each polish makes one request to Claude Opus 5.5 (`claude-opus-5-5`) through your own Claude Code
 login. It counts toward your usage the same as any other request (up to about
 4,000 output tokens). The request contains only your draft and the
 plugin's rewriting instructions: no conversation history, files or tool
@@ -116,9 +121,12 @@ claude plugin marketplace remove prompt-polish
   `prompt-polish@prompt-polish` as enabled, then run `/reload-plugins`.
   The button isn't drawn while a survey is showing, or in VS Code or on
   mobile.
-- **"Polish failed: …" toast.** The model request didn't complete: a network
-  or API error, no reply, or the 90-second timeout. Your draft is unchanged;
-  press the button again.
+- **"Polish failed: …" toast.** The model request didn't complete (a network
+  or API error, no reply, or the 90-second timeout), or the reply had no
+  rewritten prompt in it. Your draft is unchanged; press the button again.
+- **No access to Opus.** If your plan or organisation doesn't allow
+  `claude-opus-5-5`, the toast names the API error. Change the `model` in
+  `hooks/register.tsx` to a model you can use.
 - **Two Polish buttons.** Another copy of prompt-polish is installed from a
   different marketplace. Remove one with `claude plugin uninstall
   prompt-polish@<marketplace>`.
@@ -152,10 +160,13 @@ only get a change through `claude plugin update`. Bump `version` in
 | `.claude-plugin/marketplace.json` | the marketplace listing this folder |
 | `hooks/hooks.json` | names the hooks module |
 | `hooks/register.tsx` | the button and the polish flow |
-| `hooks/polish-prompt.ts` | the rewriting instructions and `<polished>` extraction |
+| `hooks/polish-prompt.ts` | the rewriting instructions and `<polished>` extraction (fails closed when the tags are missing) |
 | `hooks/polish.test.ts` | tests on the terminal and desktop surfaces |
 | `types/index.d.ts` | the plugin's state contract (`isBusy`, `frame`) |
 
 To change how prompts get rewritten, edit `SYSTEM` in
-`hooks/polish-prompt.ts`. To change the model, effort or timeout, edit the
+`hooks/polish-prompt.ts`. It is a Claude Code-specific version of the shared
+contract in `../skills/prompt-polish/references/polishing.md` (the plugin is
+installed from this folder alone, so it can't read that file); carry rule
+changes across by hand. To change the model, effort or timeout, edit the
 `$.model.complete` call in `hooks/register.tsx`.

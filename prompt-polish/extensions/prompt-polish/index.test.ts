@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { DEFAULT_POLISH_CONFIG } from "./config.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
 import registerExtension, {
@@ -54,16 +56,37 @@ const response = (
 	content: unknown,
 	errorMessage?: string,
 ): Response => ({ stopReason, content, errorMessage });
-const cursorModel = { provider: "cursor", id: "cursor-test-model" };
+const polishingModel = {
+	provider: "openrouter",
+	id: "anthropic/claude-opus-5.5",
+};
+const providers = ["cursor", "openrouter", "anthropic", "openai", "fake-provider"];
 type AvailableModels = unknown[] | (() => unknown[]);
 
-function cursorBoundaries(systemPrompt: string) {
+function outputBoundaries(systemPrompt: string) {
 	const match =
 		/Opening boundary: (<prompt-polish-output-[a-f0-9]+>)\n- Closing boundary: (<\/prompt-polish-output-[a-f0-9]+>)/.exec(
 			systemPrompt,
 		);
-	if (!match?.[1] || !match[2]) throw new Error("missing cursor boundaries");
+	if (!match?.[1] || !match[2]) throw new Error("missing output boundaries");
 	return { open: match[1], close: match[2] };
+}
+
+function boundedText(value: string, systemPrompt: string): string {
+	const { open, close } = outputBoundaries(systemPrompt);
+	return `${open}${value}${close}`;
+}
+
+function boundedResponse(
+	value: string,
+	stopReason = "stop",
+	otherContent: unknown[] = [],
+): Completion {
+	return (calls) =>
+		response(stopReason, [
+			text(boundedText(value, calls.at(-1)!.context.systemPrompt)),
+			...otherContent,
+		]);
 }
 
 function harness(
@@ -215,7 +238,8 @@ test("registered preview shortcut expands and restores without mutating editor t
 		model,
 		modelRegistry: {
 			getAvailable: () => [],
-			complete: async () => response("stop", [text(generated)]),
+			complete: async (_model: unknown, context: RequestContext) =>
+				response("stop", [text(boundedText(generated, context.systemPrompt))]),
 		},
 		signal: undefined,
 	};
@@ -313,6 +337,7 @@ test("successful polish persists history even when the editor changed", async ()
 	const notices: string[] = [];
 	let editorText = "original prompt";
 	let completeStarted = false;
+	let completionContext: RequestContext;
 	let resolveCompletion: ((value: Response) => void) | undefined;
 	const ui = {
 		getEditorText: () => editorText,
@@ -331,7 +356,8 @@ test("successful polish persists history even when the editor changed", async ()
 		model,
 		modelRegistry: {
 			getAvailable: () => [],
-			complete: () => {
+			complete: (_model: unknown, context: RequestContext) => {
+				completionContext = context;
 				completeStarted = true;
 				return new Promise<Response>((resolve) => {
 					resolveCompletion = resolve;
@@ -353,7 +379,11 @@ test("successful polish persists history even when the editor changed", async ()
 	while (!completeStarted)
 		await new Promise<void>((resolve) => setTimeout(resolve, 0));
 	editorText = "user changed this while polishing";
-	resolveCompletion?.(response("stop", [text("improved prompt")]));
+	resolveCompletion?.(
+		response("stop", [
+			text(boundedText("improved prompt", completionContext!.systemPrompt)),
+		]),
+	);
 	await pending;
 
 	expect(editorText).toBe("user changed this while polishing");
@@ -791,326 +821,370 @@ test("expanded preview scrolls only after content exceeds its viewport", () => {
 	expect(long.scrollView.scrollTop).toBe(1);
 });
 
-test("uses the configured model and completion defaults when available", async () => {
-	const configuredModel = {
-		provider: "configured-provider",
-		id: "gpt-5.6-sol",
-	};
-	const h = harness(
-		[response("stop", [text("  improved prompt  ")])],
-		undefined,
-		model,
-		[configuredModel],
-	);
-
-	expect(await polishPrompt("original", h.ctx)).toBe("improved prompt");
-	expect(h.calls[0].model).toBe(configuredModel);
-	expect(h.calls[0].options).toMatchObject({
-		reasoningEffort: "high",
-		serviceTier: "priority",
-	});
-	expect(h.calls[0].context.tools).toEqual([]);
-});
-
-test("falls back to the current model when the configured model is unavailable", async () => {
-	const h = harness([response("stop", [text("  improved prompt  ")])]);
-
-	expect(await polishPrompt("original", h.ctx)).toBe("improved prompt");
-	expect(h.calls[0].model).toBe(model);
-});
-
-test("prefers the current provider for duplicate bare model ids", async () => {
-	const currentModel = { provider: "z-provider", id: "current-model" };
-	const otherProvider = { provider: "a-provider", id: "gpt-5.6-sol" };
-	const currentProvider = { provider: "z-provider", id: "gpt-5.6-sol" };
-	const h = harness(
-		[response("stop", [text("  improved prompt  ")])],
-		undefined,
-		currentModel,
-		[otherProvider, currentProvider],
-	);
-
-	expect(await polishPrompt("original", h.ctx)).toBe("improved prompt");
-	expect(h.calls[0].model).toBe(currentProvider);
-});
-
-test("orders bare model matches deterministically after provider preference", async () => {
-	const currentModel = { provider: "missing-provider", id: "current-model" };
-	const laterProvider = { provider: "z-provider", id: "gpt-5.6-sol" };
-	const earlierProvider = { provider: "a-provider", id: "gpt-5.6-sol" };
-	const h = harness(
-		[response("stop", [text("  improved prompt  ")])],
-		undefined,
-		currentModel,
-		[laterProvider, earlierProvider],
-	);
-
-	expect(await polishPrompt("original", h.ctx)).toBe("improved prompt");
-	expect(h.calls[0].model).toBe(earlierProvider);
-});
-
-test("falls back when an unavailable qualified model is configured", () => {
-	const h = harness([], undefined, model, [
-		{ provider: "other-provider", id: "missing-model" },
+test("default config resolves OpenRouter's nested Opus id and targets the session model", async () => {
+	const h = harness([boundedResponse("improved prompt")], undefined, model, [
+		{ provider: "openrouter", id: "wrong-model" },
+		{ provider: "anthropic", id: "claude-opus-5.5" },
+		polishingModel,
 	]);
-
 	expect(
 		resolveConfiguredModel(
-			"missing-provider/missing-model",
-			model,
+			DEFAULT_POLISH_CONFIG.model,
+			model as never,
 			h.ctx.modelRegistry,
 		),
-	).toBe(model);
-});
-
-test("falls back when available-model lookup throws", async () => {
-	const h = harness(
-		[response("stop", [text("  improved prompt  ")])],
-		undefined,
-		model,
-		() => {
-			throw new Error("secret lookup failure");
-		},
-	);
-
+	).toBe(polishingModel);
 	expect(await polishPrompt("original", h.ctx)).toBe("improved prompt");
-	expect(h.calls[0].model).toBe(model);
-});
-
-test("omits serviceTier when fastMode is false", () => {
-	const options = completionOverrides({
-		model: "gpt-5.6-sol",
-		thinkingLevel: "high",
-		fastMode: false,
-	});
-
-	expect(options.reasoningEffort).toBe("high");
-	expect("serviceTier" in options).toBe(false);
-});
-
-test("reuses the configured model and completion defaults for retries", async () => {
-	const configuredModel = {
-		provider: "configured-provider",
-		id: "gpt-5.6-sol",
+	expect(h.calls[0].model).toBe(polishingModel);
+	expect(h.calls[0].options).toMatchObject({ reasoningEffort: "high" });
+	expect(h.calls[0].options).not.toHaveProperty("serviceTier");
+	expect(h.calls[0].context.tools).toEqual([]);
+	const message = h.calls[0].context.messages[0] as {
+		content: { text: string }[];
 	};
+	expect(message.content[0].text).toContain(
+		`TARGET_MODEL: ${model.provider}/${model.id}`,
+	);
+	expect(message.content[0].text).not.toContain(
+		`TARGET_MODEL: ${polishingModel.provider}/${polishingModel.id}`,
+	);
+	expect(message.content[0].text).toContain(
+		"CONTEXT:\n<context>\n\n</context>",
+	);
+});
+
+test("falls back to the session model when the default is unavailable or lookup throws", async () => {
+	for (const available of [
+		[],
+		() => {
+			throw new Error("lookup failed");
+		},
+	]) {
+		const h = harness(
+			[boundedResponse("improved")],
+			undefined,
+			model,
+			available,
+		);
+		expect(await polishPrompt("original", h.ctx)).toBe("improved");
+		expect(h.calls[0].model).toBe(model);
+	}
+});
+
+test("bare model ids prefer the session provider then sort deterministically", () => {
+	const later = { provider: "z-provider", id: "custom-model" };
+	const earlier = { provider: "a-provider", id: "custom-model" };
+	const h = harness([], undefined, model, [later, earlier]);
+	expect(
+		resolveConfiguredModel("custom-model", model as never, h.ctx.modelRegistry),
+	).toBe(earlier);
+	expect(
+		resolveConfiguredModel("custom-model", later as never, h.ctx.modelRegistry),
+	).toBe(later);
+});
+
+test("fastMode only opts into priority when explicitly enabled", () => {
+	expect(completionOverrides(DEFAULT_POLISH_CONFIG)).not.toHaveProperty(
+		"serviceTier",
+	);
+	expect(
+		completionOverrides({ ...DEFAULT_POLISH_CONFIG, fastMode: true }),
+	).toMatchObject({ serviceTier: "priority" });
+});
+
+test("initial and retry system prompts start with the exact module-relative contract", async () => {
+	const contract = readFileSync(
+		new URL(
+			"../../skills/prompt-polish/references/polishing.md",
+			import.meta.url,
+		),
+		"utf8",
+	);
 	const h = harness(
 		[
 			response("toolUse", [toolCall({ query: "secret" })]),
-			response("stop", [text("  fallback prompt  ")]),
+			boundedResponse("fallback prompt"),
 		],
 		undefined,
 		model,
-		[configuredModel],
+		[polishingModel],
 	);
-
-	expect(await polishPrompt("original", h.ctx)).toBe("fallback prompt");
-	expect(h.calls.map((call) => call.model)).toEqual([
-		configuredModel,
-		configuredModel,
-	]);
-	for (const call of h.calls) {
-		expect(call.options).toMatchObject({
-			reasoningEffort: "high",
-			serviceTier: "priority",
-		});
-	}
-});
-
-test("returns useful text from toolUse without retrying", async () => {
-	const d = diagnostics();
-	const h = harness([
-		response("toolUse", [
-			text("  useful prompt  "),
-			toolCall({ secret: "tool-args" }),
-		]),
-	]);
-
-	expect(await polishPrompt("original", h.ctx, { logger: d.logger })).toBe(
-		"useful prompt",
-	);
-	expect(h.calls).toHaveLength(1);
-	expect(d.entries).toHaveLength(1);
-});
-
-test("retries a toolUse without text and accepts stop text", async () => {
-	const d = diagnostics();
-	const h = harness([
-		response("toolUse", [toolCall({ query: "secret" })]),
-		response("stop", [text("  fallback prompt  ")]),
-	]);
-
-	expect(await polishPrompt("original", h.ctx, { logger: d.logger })).toBe(
+	expect(await polishPrompt("original", h.ctx, { logger: () => {} })).toBe(
 		"fallback prompt",
 	);
 	expect(h.calls).toHaveLength(2);
-	expect(d.entries).toHaveLength(1);
-	expect(
-		h.calls.every(
-			(call) =>
-				Array.isArray(call.context.tools) && call.context.tools.length === 0,
-		),
-	).toBe(true);
-	expect(h.calls[1].context.systemPrompt).toContain("no tools are available");
-});
-
-test("every polishing request requires a task-specific definition of done", async () => {
-	const h = harness([
-		response("toolUse", [toolCall({ query: "secret" })]),
-		response("stop", [text("fallback prompt")]),
-	]);
-	await polishPrompt("original", h.ctx, { logger: () => {} });
-	const cursor = harness(
-		[
-			(calls) => {
-				const { open, close } = cursorBoundaries(calls[0].context.systemPrompt);
-				return response("stop", [text(`${open}cursor prompt${close}`)]);
-			},
-		],
-		undefined,
-		cursorModel,
-	);
-	await polishPrompt("original", cursor.ctx, { logger: () => {} });
-
-	const prompts = [...h.calls, ...cursor.calls].map(
-		(call) => call.context.systemPrompt,
-	);
-	expect(prompts).toHaveLength(3);
-	for (const prompt of prompts) {
-		expect(prompt).toContain('**Define "done" (always required).**');
-		expect(prompt).toContain(
-			'"How can the model determine that this task is complete?"',
-		);
-		expect(prompt).toContain("Derive every\n  criterion from the INPUT PROMPT");
-		expect(prompt).toContain("never generic boilerplate");
-		expect(prompt).toContain(
-			"When success criteria are\n  missing or ambiguous",
-		);
-		expect(prompt).toContain(
-			"without inventing facts, data, requirements, or\n  thresholds",
-		);
-		expect(prompt).toContain(
-			"Contains an explicit, task-specific definition of done",
-		);
+	for (const call of h.calls) {
+		expect(call.context.systemPrompt.startsWith(contract)).toBe(true);
+		outputBoundaries(call.context.systemPrompt);
+		expect(call.model).toBe(polishingModel);
+		expect(call.options).toMatchObject({ reasoningEffort: "high" });
+		expect(call.options).not.toHaveProperty("serviceTier");
+		expect(call.context.tools).toEqual([]);
 	}
+	expect(h.calls[1].context.systemPrompt).toContain("no tools available");
 });
 
-test("reports malformed tool responses after retry without leaking details", async () => {
-	const d = diagnostics();
-	const malformed = response("toolUse", [
-		{
-			type: "toolCall",
-			id: "secret-id",
-			name: "secret-tool",
-			arguments: "secret-arguments",
+test.each(providers)(
+	"%s strips outside text and structured thinking using its own boundary",
+	async (provider) => {
+		const h = harness(
+			[
+				(calls) =>
+					response("stop", [
+						{ type: "thinking", thinking: "secret trace" },
+						text(
+							`outside reasoning${boundedText("final prompt", calls.at(-1)!.context.systemPrompt)}trailing reasoning`,
+						),
+					]),
+			],
+			undefined,
+			{ provider, id: "test-model" },
+		);
+		expect(await polishPrompt("original", h.ctx)).toBe("final prompt");
+		expect(h.calls).toHaveLength(1);
+	},
+);
+
+test("retry and independent requests get fresh nonces and keep tools disabled", async () => {
+	const h = harness([
+		response("stop", [text("unbounded first response")]),
+		boundedResponse("bounded retry"),
+		boundedResponse("another request"),
+	]);
+	expect(await polishPrompt("original", h.ctx, { logger: () => {} })).toBe(
+		"bounded retry",
+	);
+	expect(await polishPrompt("original", h.ctx)).toBe("another request");
+	expect(
+		new Set(
+			h.calls.map((call) => outputBoundaries(call.context.systemPrompt).open),
+		).size,
+	).toBe(3);
+	expect(h.calls.map((call) => call.context.tools)).toEqual([[], [], []]);
+});
+
+test.each(providers)(
+	"%s retries unbounded output once and preserves editor and history",
+	async (provider) => {
+		await checkUnchangedEditor(
+			[
+				response("stop", [text("secret first trace")]),
+				response("stop", [text("secret retry trace")]),
+			],
+			{ provider, id: "test-model" },
+			2,
+			"malformed content",
+		);
+	},
+);
+
+test.each(["stop", "toolUse"])(
+	"empty bounded %s leaves editor and history unchanged without retrying",
+	async (reason) => {
+		await checkUnchangedEditor(
+			[boundedResponse("", reason)],
+			model,
+			1,
+			"found no prompt to rewrite; the original prompt was not changed.",
+		);
+	},
+);
+
+test("empty bounded retry stops without adding history", async () => {
+	await checkUnchangedEditor(
+		[response("toolUse", [toolCall({})]), boundedResponse("")],
+		model,
+		2,
+		"found no prompt to rewrite",
+	);
+});
+
+async function checkUnchangedEditor(
+	responses: Completion[],
+	selectedModel: typeof model,
+	count: number,
+	message: string,
+) {
+	const shortcuts = new Map<string, { handler: (ctx: unknown) => unknown }>();
+	const appended: unknown[] = [];
+	const notices: string[] = [];
+	const writes: string[] = [];
+	const h = harness(responses, undefined, selectedModel);
+	const ctx = {
+		...h.ctx,
+		mode: "tui",
+		ui: {
+			getEditorText: () => "original prompt",
+			setEditorText: (value: string) => writes.push(value),
+			setStatus: () => {},
+			setWidget: () => {},
+			theme: previewTheme,
+			notify: (value: string) => notices.push(value),
+			custom: async (
+				factory: (
+					tui: TUI,
+					theme: typeof previewTheme,
+					kb: unknown,
+					done: () => void,
+				) => PreviewComponent,
+			) => {
+				const layout = factory(previewTui(), previewTheme, {}, () => {});
+				expect(layout.render(80).join("\n")).toContain(
+					"No polished prompts saved",
+				);
+				return null;
+			},
+		},
+	};
+	registerExtension({
+		registerShortcut: (
+			key: string,
+			shortcut: { handler: (ctx: unknown) => unknown },
+		) => shortcuts.set(key, shortcut),
+		appendEntry: (_type: string, data: unknown) => appended.push(data),
+	} as never);
+	await shortcuts.get("ctrl+shift+o")!.handler(ctx);
+	expect(h.calls).toHaveLength(count);
+	expect(writes).toEqual([]);
+	expect(appended).toEqual([]);
+	expect(notices).toHaveLength(1);
+	expect(notices[0]).toContain(message);
+	expect(notices[0]).not.toContain("secret");
+	await shortcuts.get(HISTORY_SHORTCUT)!.handler(ctx);
+}
+
+test.each([
+	"duplicate-open",
+	"duplicate-close",
+	"reversed",
+	"missing-close",
+	"stale-nonce",
+])("rejects %s boundaries after one retry", async (kind) => {
+	const invalid = (calls: CapturedCall[]) => {
+		const { open, close } = outputBoundaries(
+			calls.at(-1)!.context.systemPrompt,
+		);
+		const values = {
+			"duplicate-open": `${open}first${open}nested${close}`,
+			"duplicate-close": `${open}first${close}${close}`,
+			reversed: `${close}prompt${open}`,
+			"missing-close": `${open}prompt`,
+			"stale-nonce":
+				"<prompt-polish-output-deadbeef>prompt</prompt-polish-output-deadbeef>",
+		};
+		return response("stop", [text(values[kind as keyof typeof values])]);
+	};
+	const h = harness([invalid, invalid]);
+	await expect(
+		polishPrompt("original", h.ctx, { logger: () => {} }),
+	).rejects.toThrow("malformed content");
+	expect(h.calls).toHaveLength(2);
+});
+
+test("joins boundary fragments across text blocks without leaking thinking", async () => {
+	const h = harness([
+		(calls) => {
+			const value = boundedText(
+				"final\n\n  prompt",
+				calls[0].context.systemPrompt,
+			);
+			return response("stop", [
+				text(value.slice(0, 10)),
+				{ type: "thinking", thinking: "secret" },
+				text(value.slice(10)),
+			]);
 		},
 	]);
-	const h = harness([malformed, malformed]);
+	expect(await polishPrompt("original", h.ctx)).toBe("final\n\n  prompt");
+});
 
+test("bounded toolUse text succeeds without retry but malformed tools are rejected", async () => {
+	const h = harness([
+		boundedResponse("useful prompt", "toolUse", [toolCall({})]),
+	]);
+	expect(await polishPrompt("original", h.ctx, { logger: () => {} })).toBe(
+		"useful prompt",
+	);
+	expect(h.calls).toHaveLength(1);
+	const malformed = harness([
+		boundedResponse("prompt", "toolUse", [toolCall("malformed")]),
+	]);
 	await expect(
-		polishPrompt("secret-original", h.ctx, { logger: d.logger }),
+		polishPrompt("original", malformed.ctx, { logger: () => {} }),
 	).rejects.toThrow("malformed or incomplete tool response");
-	expect(d.entries).toHaveLength(2);
-	expect(JSON.stringify(d.entries)).not.toContain("secret-original");
-	expect(JSON.stringify(d.entries)).not.toContain("secret-arguments");
 });
 
-test("reports valid but unsupported tool requests after retry", async () => {
-	const d = diagnostics();
-	const call = toolCall({ secret: "secret-arguments" });
-	const h = harness([response("toolUse", [call]), response("toolUse", [call])]);
-
-	await expect(
-		polishPrompt("original", h.ctx, { logger: d.logger }),
-	).rejects.toThrow("requested unavailable tools");
-	expect(h.calls).toHaveLength(2);
-	expect(d.entries).toHaveLength(2);
-	expect(
-		d.entries.map((entry) => (entry as { attempt: number }).attempt),
-	).toEqual([1, 2]);
-});
-
-test("converts a retry that ignores abort into a controlled timeout", async () => {
-	const never = new Promise<Response>(() => {});
-	const d = diagnostics();
-	const h = harness([response("toolUse", []), never]);
-
-	await expect(
-		polishPrompt("secret-original", h.ctx, { timeoutMs: 5, logger: d.logger }),
-	).rejects.toThrow("timed out");
-	expect(h.calls).toHaveLength(2);
-	expect(JSON.stringify(d.entries)).not.toContain("secret-original");
-});
-
-test("handles provider rejection, provider error, and aborted response safely", async () => {
-	const cases: Array<{ completion: Completion; message: string }> = [
-		{
-			completion: () => Promise.reject(new Error("secret-provider-error")),
-			message: "request failed",
-		},
-		{
-			completion: response("error", [], "secret-provider-error"),
-			message: "request failed",
-		},
-		{
-			completion: response("aborted", [], "secret-provider-error"),
-			message: "cancelled",
-		},
-	];
-
-	for (const item of cases) {
+test("tool-only retries distinguish malformed and unavailable tools without leaking arguments", async () => {
+	for (const [argumentsValue, expected] of [
+		["secret-arguments", "malformed or incomplete tool response"],
+		[{ secret: "secret-arguments" }, "requested unavailable tools"],
+	] as const) {
 		const d = diagnostics();
-		const h = harness([item.completion]);
+		const completion = response("toolUse", [toolCall(argumentsValue)]);
+		const h = harness([completion, completion]);
 		await expect(
 			polishPrompt("secret-original", h.ctx, { logger: d.logger }),
-		).rejects.toThrow(item.message);
-		expect(JSON.stringify(d.entries)).not.toContain("secret-original");
-		expect(JSON.stringify(d.entries)).not.toContain("secret-provider-error");
+		).rejects.toThrow(expected);
+		expect(h.calls).toHaveLength(2);
+		expect(d.entries).toHaveLength(2);
+		expect(JSON.stringify(d.entries)).not.toContain("secret-");
 	}
 });
 
-test("outer cancellation rejects even when the provider ignores abort", async () => {
-	const controller = new AbortController();
+test("retry timeout and parent cancellation reject even when the provider ignores abort", async () => {
 	const never = new Promise<Response>(() => {});
-	const h = harness([never], controller.signal);
-	const pending = polishPrompt("original", h.ctx, {
+	const h = harness([response("toolUse", []), never]);
+	await expect(
+		polishPrompt("original", h.ctx, { timeoutMs: 5, logger: () => {} }),
+	).rejects.toThrow("timed out");
+	expect(h.calls).toHaveLength(2);
+	const controller = new AbortController();
+	const cancelled = harness([never], controller.signal);
+	const pending = polishPrompt("original", cancelled.ctx, {
 		timeoutMs: 500,
 		logger: () => {},
 	});
-
 	controller.abort();
 	await expect(pending).rejects.toThrow("cancelled");
 });
 
-test("keeps incomplete and malformed non-tool completions controlled", async () => {
-	const cases = [
-		{ completion: response("stop", []), message: "no usable text" },
-		{ completion: response("stop", undefined), message: "malformed content" },
-		{ completion: response("length", []), message: "truncated" },
-		{ completion: response("pending", []), message: "did not complete" },
-		{ completion: response("deferred", []), message: "did not complete" },
-		{ completion: response("mystery", []), message: "request failed" },
+test("incomplete, malformed, rejected and cancelled responses remain controlled", async () => {
+	const cases: Array<[Completion, string]> = [
+		[response("stop", []), "no usable text"],
+		[response("stop", undefined), "malformed content"],
+		[response("length", []), "truncated"],
+		[response("pending", []), "did not complete"],
+		[response("deferred", []), "did not complete"],
+		[response("mystery", []), "request failed"],
+		[response("error", [], "secret-error"), "request failed"],
+		[response("aborted", []), "cancelled"],
+		[() => Promise.reject(new Error("secret-error")), "request failed"],
+		[
+			boundedResponse("prompt", "stop", [
+				{ type: "thinking", thinking: "secret", thinkingSignature: 42 },
+			]),
+			"malformed content",
+		],
 	];
-
-	for (const item of cases) {
-		const h = harness([item.completion]);
+	for (const [completion, expected] of cases) {
+		const h = harness([completion]);
+		const d = diagnostics();
 		await expect(
-			polishPrompt("original", h.ctx, { logger: () => {} }),
-		).rejects.toThrow(item.message);
+			polishPrompt("secret-original", h.ctx, { logger: d.logger }),
+		).rejects.toThrow(expected);
+		expect(JSON.stringify(d.entries)).not.toContain("secret-");
 	}
 });
 
 test("diagnostics contain only safe metadata", async () => {
 	const d = diagnostics();
 	const h = harness([
-		response("toolUse", [
-			text("safe"),
+		boundedResponse("safe", "toolUse", [
 			toolCall({ secret: "secret-tool-args" }),
 		]),
 	]);
-
 	await polishPrompt("secret-original-prompt", h.ctx, { logger: d.logger });
-	const entry = d.entries[0] as Record<string, unknown>;
-	expect(Object.keys(entry).sort()).toEqual([
+	expect(Object.keys(d.entries[0] as Record<string, unknown>).sort()).toEqual([
 		"attempt",
 		"contentCount",
 		"event",
@@ -1120,156 +1194,5 @@ test("diagnostics contain only safe metadata", async () => {
 		"textCount",
 		"toolCallCount",
 	]);
-	expect(JSON.stringify(d.entries)).not.toContain("secret-original-prompt");
-	expect(JSON.stringify(d.entries)).not.toContain("secret-tool-args");
-});
-
-test("Cursor strips screenshot-style reasoning outside the bounded prompt", async () => {
-	const h = harness(
-		[
-			(calls) => {
-				const { open, close } = cursorBoundaries(calls[0].context.systemPrompt);
-				return response("stop", [
-					text(
-						[
-							"I inspected the screenshot and reasoned about the layout:",
-							"┌────────────────────┐",
-							"│ secret trace       │",
-							"└────────────────────┘",
-							`${open}bounded prompt${close}`,
-							"post-boundary reasoning",
-						].join("\n"),
-					),
-				]);
-			},
-		],
-		undefined,
-		cursorModel,
-	);
-
-	expect(await polishPrompt("original", h.ctx)).toBe("bounded prompt");
-});
-
-test("Cursor ignores structured thinking and returns bounded final text", async () => {
-	const h = harness(
-		[
-			(calls) => {
-				const { open, close } = cursorBoundaries(calls[0].context.systemPrompt);
-				return response("stop", [
-					{ type: "thinking", thinking: "secret trace" },
-					text(`${open}final prompt${close}`),
-				]);
-			},
-		],
-		undefined,
-		cursorModel,
-	);
-
-	expect(await polishPrompt("original", h.ctx)).toBe("final prompt");
-});
-
-test("Cursor retries unbounded text with the same boundary and no tools", async () => {
-	const h = harness(
-		[
-			() => response("stop", [text("unbounded first response")]),
-			(calls) => {
-				const first = cursorBoundaries(calls[0].context.systemPrompt);
-				const second = cursorBoundaries(calls[1].context.systemPrompt);
-				expect(second).toEqual(first);
-				return response("stop", [
-					text(`${second.open}bounded retry${second.close}`),
-				]);
-			},
-		],
-		undefined,
-		cursorModel,
-	);
-
-	expect(await polishPrompt("original", h.ctx)).toBe("bounded retry");
-	expect(h.calls).toHaveLength(2);
-	expect(h.calls.map((call) => call.context.tools)).toEqual([[], []]);
-});
-
-test("Cursor rejects two unbounded responses without exposing traces", async () => {
-	const d = diagnostics();
-	const h = harness(
-		[
-			response("stop", [text("secret first trace")]),
-			response("stop", [text("secret retry trace")]),
-		],
-		undefined,
-		cursorModel,
-	);
-	let error: unknown;
-	try {
-		await polishPrompt("secret-original", h.ctx, { logger: d.logger });
-	} catch (caught) {
-		error = caught;
-	}
-
-	expect(error).toBeInstanceOf(Error);
-	expect(String(error)).toContain("malformed content");
-	expect(String(error)).not.toContain("secret first trace");
-	expect(String(error)).not.toContain("secret retry trace");
-	expect(JSON.stringify(d.entries)).not.toContain("secret first trace");
-	expect(JSON.stringify(d.entries)).not.toContain("secret retry trace");
-	expect(h.calls).toHaveLength(2);
-});
-
-test("Cursor rejects duplicate output boundaries", async () => {
-	const duplicate = (calls: CapturedCall[]) => {
-		const { open, close } = cursorBoundaries(calls[0].context.systemPrompt);
-		return response("stop", [
-			text(`${open}first${open}nested${close}${close}`),
-		]);
-	};
-	const h = harness([duplicate, duplicate], undefined, cursorModel);
-
-	await expect(polishPrompt("original", h.ctx)).rejects.toThrow(
-		"malformed content",
-	);
-});
-
-test("Cursor rejects malformed toolUse with bounded text", async () => {
-	const h = harness(
-		[
-			(calls) => {
-				const { open, close } = cursorBoundaries(calls[0].context.systemPrompt);
-				return response("toolUse", [
-					text(`${open}bounded prompt${close}`),
-					toolCall("malformed-arguments"),
-				]);
-			},
-		],
-		undefined,
-		cursorModel,
-	);
-
-	await expect(polishPrompt("original", h.ctx)).rejects.toThrow(
-		"malformed or incomplete tool response",
-	);
-});
-
-test("Cursor keeps malformed thinking responses controlled", async () => {
-	const h = harness(
-		[
-			(calls) => {
-				const { open, close } = cursorBoundaries(calls[0].context.systemPrompt);
-				return response("stop", [
-					{
-						type: "thinking",
-						thinking: "secret trace",
-						thinkingSignature: 42,
-					},
-					text(`${open}valid final${close}`),
-				]);
-			},
-		],
-		undefined,
-		cursorModel,
-	);
-
-	await expect(polishPrompt("original", h.ctx)).rejects.toThrow(
-		"malformed content",
-	);
+	expect(JSON.stringify(d.entries)).not.toContain("secret-");
 });

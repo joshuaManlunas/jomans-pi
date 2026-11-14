@@ -19,7 +19,7 @@ async function polish($: EngineInterface) {
   const tick = $.clock.every(80, () => update($, frame, n => (n + 1) % FRAMES.length))
   try {
     const r = await $.model.complete({
-      model: 'sonnet',
+      model: 'claude-opus-5-5',
       system: SYSTEM,
       prompt: ask(draft),
       maxTokens: 4096,
@@ -36,7 +36,15 @@ async function polish($: EngineInterface) {
       return
     }
     const polished = extract(r.text)
-    if (polished) await $.prompt.fill({ text: polished, mode: 'replace' })
+    if (polished === undefined) {
+      $.ui.toast('Polish failed: the reply had no rewritten prompt; draft unchanged')
+      return
+    }
+    if (!polished) {
+      $.ui.toast('Nothing to polish: the draft does not read as a prompt')
+      return
+    }
+    await $.prompt.fill({ text: polished, mode: 'replace' })
   } finally {
     tick.cancel()
     await update($, isBusy, () => false)
