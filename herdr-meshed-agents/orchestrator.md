@@ -18,7 +18,7 @@ Every delegated task must have one clear owner and should specify:
 6. Acceptance criteria
 7. Required tests, checks, or other verification
 8. Files or areas the worker must not modify
-9. The expected response and handoff format
+9. The expected response and handoff format. End every work order with a literal report command in the form `hc send <orchestrator address> '<id> <status> ...'`, with the exact orchestrator address and assignment ID filled in.
 
 Prefer outcome-oriented assignments with minimal overlap.
 

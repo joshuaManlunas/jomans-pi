@@ -72,11 +72,15 @@ Squad size grows with the count: `n = W + 1 (+1 with an Oracle)` members and `n 
 
 ## Codex members
 
-Codex has no system-prompt-file or `--name` flag. The helper therefore starts each Codex Worker or Oracle with `codex --no-daemon -C <caller folder> -c suppress_unstable_features_warning=true -m <model> -c model_reasoning_effort="<effort>" "<role bootstrap>"`, which carries the role bootstrap as the initial prompt so it can't be dropped while Codex boots. The member reads only its role file and reports `ROLE_LOADED <role> FROM <name> PATH "<path>"` to the orchestrator with `hc send`. The orchestrator validates that tagged message (`role-loaded --from <terminal>`) before any pair test or READY. `--no-daemon` is required, or Codex commands run outside hc. Codex's sandbox allows the `hc send` and evidence-file writes the protocol needs.
+The helper starts each Codex Worker or Oracle with its role instructions as the initial prompt. The member reads its role file and sends `ROLE_LOADED` to the orchestrator. The orchestrator validates the tagged receipt before sending the standup cards. Codex uses sandbox escalation for Herdr commands. See [HARNESSES.md](HARNESSES.md) for launch and send troubleshooting.
 
 ## Cursor members
 
-Cursor's CLI has no system-prompt or `--name` flag, so the skill starts a Cursor Worker or Oracle with the helper's `["cursor-agent"]` argv in a pane created by `herdr-app do pane.split --pane <pane> --argv ...` and then loads its role file in conversation. The member must report `ROLE_LOADED <role> FROM <name> PATH "<path>"` (the exact role-file path as a quoted string) to the orchestrator with `hc send` before any pair test or READY, and the final report says the role was loaded in conversation, not injected as a system prompt. Cursor may show trust, approval, or authentication prompts; the orchestrator asks you before answering them. Omit the model to preserve your configured Cursor default (`auto` is only one example of a default). Effort may be encoded in a model slug, so `--effort` is rejected for Cursor and the skill never rewrites a model to change thinking.
+The orchestrator sends each Cursor Worker or Oracle its role instructions after launch and validates its `ROLE_LOADED` receipt before sending the standup cards. The final report identifies this as conversational role guidance. Cursor may show trust, approval, or authentication prompts. The orchestrator asks you before answering them. Omit the model to preserve your configured Cursor default. Choose the exact model slug for any effort the model encodes.
+
+## Standup traffic
+
+Each Worker and Oracle gets a generated card with the roster, its assigned PINGs, and the commands to record ACKs and send `PAIRS_DONE`. For an exchange with the orchestrator, the member's PING confirms receipt of the card. The orchestrator sends READY after every pair passes, then waits for each `READY_ACK` before reporting `Operational`.
 
 ## Recipes by purpose
 

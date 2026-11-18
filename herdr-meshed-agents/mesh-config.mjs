@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Deterministic helpers for the herdr-meshed-agents skill. Dependency-free, no side effects
-// except reading stdin / checking prompt files in the CLI. herdr-core transport only (no cmux).
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+// except reading inputs and writing standup plans in the CLI. herdr-core transport only (no cmux).
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -142,6 +142,10 @@ const isRole = (r) => typeof r === "string" && Object.hasOwn(ROLE_FILE, r); // o
 const PROMPT_FLAG = { pi: "--system-prompt", claude: "--append-system-prompt-file" };
 const EXECUTABLE = { pi: "pi", claude: "claude", codex: "codex", cursor: "cursor-agent" };
 export const ROLE_DELIVERY = { pi: "system-prompt", claude: "system-prompt", codex: "launch-prompt", cursor: "send" };
+const CODEX_SANDBOX_FACT =
+	"Codex's sandbox blocks the hc socket. Run every hc command with sandbox escalation, from the first try. " +
+	"Exit 5 or 'unavailable' means nothing was sent: rerun the same command escalated. For any other send failure, report it; do not resend. " +
+	"If you still cannot send, print ROLE_BLOCKED <reason> (or MESH_BLOCKED <reason> after role load) as your last line and stop.";
 
 /** Role prompt file for a role under a prompt directory. */
 export const rolePromptPath = (role, promptDirectory) => {
@@ -214,7 +218,8 @@ export function buildRoleBootstrap({ kind, role, promptDirectory, name, executor
 			`and nothing else: no other files, memory, searches, or repository exploration. Adopt it as your role guidance for this session, ` +
 			`and do only setup and communication verification until the orchestrator confirms READY and a later explicit user-authorized assignment arrives. ` +
 			`Then report to the orchestrator by running hc send ${executor} with exactly this one line as a single argument: ${line} ` +
-			`(the exact path you read), or send the blocker the same way.`,
+			`(the exact path you read), or send the blocker the same way. ` +
+			(kind === "codex" ? CODEX_SANDBOX_FACT : "If you cannot send the blocker, print ROLE_BLOCKED <reason> as your last line and stop."),
 	};
 }
 
@@ -337,6 +342,149 @@ export function enumeratePairs(names) {
 	const pairs = [];
 	for (let i = 0; i < names.length; i++) for (let j = i + 1; j < names.length; j++) pairs.push([names[i], names[j]]);
 	return pairs;
+}
+
+// ---------- standup ----------
+
+const shellWord = (word) => `'${word.replaceAll("'", "'\\''")}'`;
+const shellPath = (path) => /^[A-Za-z0-9_./:-]+$/.test(path) ? path : shellWord(path);
+const sendLine = (address, text) => `hc send ${address} ${shellWord(text)}`;
+const pingLine = (run, { token, sender, recipient }) => `MESH_PING ${run} ${token} FROM ${sender} TO ${recipient}`;
+const ackLine = (run, { token, sender, recipient }) => `MESH_ACK ${run} ${token} FROM ${recipient} TO ${sender}`;
+const doneLine = (run, name, tokens) => `PAIRS_DONE ${run} FROM ${name} TOKENS ${tokens.join(",")}`;
+const readyAckLine = (run, name) => `READY_ACK ${run} FROM ${name}`;
+const ackPath = (evidenceDir, token) => join(evidenceDir, `${token}.ack`);
+
+export function buildStandup(input, evidenceDir) {
+	const { run, members } = input ?? {};
+	if (typeof run !== "string" || !ID_RE.test(run)) throw new Error(`Invalid run ${q(run)}.`);
+	if (!Array.isArray(members)) throw new Error("Roster must contain a members array.");
+	const addresses = new Set();
+	for (const member of members) {
+		const { name, address, role, kind } = member ?? {};
+		if (typeof name !== "string" || !NAME_RE.test(name)) throw new Error(`Invalid roster name ${q(name)}.`);
+		if (typeof address !== "string" || !ADDRESS_RE.test(address)) throw new Error(`Invalid address ${q(address)} for ${name}.`);
+		if (addresses.has(address)) throw new Error(`Duplicate roster address ${q(address)}.`);
+		if (!["orchestrator", "worker", "oracle"].includes(role)) throw new Error(`Invalid role ${q(role)} for ${name}.`);
+		if (!KINDS.includes(kind)) throw new Error(`Invalid kind ${q(kind)} for ${name}: ${KIND_HINT}.`);
+		addresses.add(address);
+	}
+	const orchestrators = members.filter(({ role }) => role === "orchestrator");
+	if (orchestrators.length !== 1) throw new Error("Roster must contain exactly one orchestrator.");
+	const [orchestrator] = orchestrators;
+	const peers = members.filter(({ role }) => role !== "orchestrator");
+	const names = members.map(({ name }) => name);
+	const roster = new Map(members.map((member) => [member.name, member]));
+	const sends = new Map(names.map((name) => [name, 0]));
+	const pairs = enumeratePairs(names).map(([first, second], i) => {
+		const firstSends = second === orchestrator.name ||
+			(first !== orchestrator.name && sends.get(first) <= sends.get(second));
+		const [sender, recipient] = firstSends ? [first, second] : [second, first];
+		sends.set(sender, sends.get(sender) + 1);
+		return { token: `${run}-p${i + 1}`, sender, recipient };
+	});
+	const rosterPath = join(evidenceDir, "roster.md");
+	const planPath = join(evidenceDir, "plan.json");
+	const rosterLines = members.map(({ address, name, role }) => `${address} ${name} (${role})`);
+	const rosterCard = [
+		`# Standup for ${run}`, "", "## Roster", "", "```text", ...rosterLines, "```", "",
+		`Evidence directory: ${evidenceDir}`, "", "## Envelope formats", "", "```text",
+		"MESH_PING <run> <token> FROM <sender> TO <recipient>",
+		"MESH_ACK <run> <token> FROM <recipient> TO <sender>", "PAIRS_DONE <run> FROM <name> TOKENS <t1,t2>",
+		"MESH_READY <run> TO <name>: all <k> pairs verified.", "READY_ACK <run> FROM <name>", "```", "",
+	].join("\n");
+	const bootstraps = peers.map(({ name, address, role, kind }) => {
+		const outgoing = pairs.filter(({ sender }) => sender === name);
+		const incoming = pairs.filter(({ recipient }) => recipient === name);
+		const record = outgoing.map((pair) =>
+			`   printf '%s\\n' ${shellWord(ackLine(run, pair))} > ${shellPath(ackPath(evidenceDir, pair.token))}`);
+		const text = [
+			`MESH_BOOTSTRAP ${run}`,
+			`You are ${name} (${role}) at ${address}. Orchestrator: ${orchestrator.name} at ${orchestrator.address}.`,
+			"Roster:", ...rosterLines, `Card copy: ${rosterPath}`,
+			"Standup is exactly these steps; there is nothing else to set up or look up:",
+			"1. Send each of your PINGs now, as written below.",
+			"2. Answer every MESH_PING you receive with its MESH_ACK, sent to the tag's from address (rule in your role file).",
+			"3. When an ACK for one of your PINGs arrives, record it with the literal command given per token:", ...record,
+			"4. Once every PING you sent has a recorded ACK:",
+			`   ${sendLine(orchestrator.address, doneLine(run, name, outgoing.map(({ token }) => token)))}`,
+			"5. End your turn and wait for READY. Reply as READY says. No repository work until an assignment arrives after READY.",
+			"Your PINGs:", ...outgoing.map((pair) => sendLine(roster.get(pair.recipient).address, pingLine(run, pair))),
+			"PINGs to expect:", ...(incoming.length ? [] : ["none"]), ...incoming.map(({ token, sender }) => `${token} from ${sender} (${roster.get(sender).address})`),
+		];
+		if (kind === "codex") text.push(CODEX_SANDBOX_FACT);
+		return { name, address, text: text.join("\n") };
+	});
+	const ready = peers.map(({ name, address }) => ({
+		name, address,
+		text: `MESH_READY ${run} TO ${name}: all ${pairs.length} pairs verified. Reply with: ${sendLine(orchestrator.address, readyAckLine(run, name))}. Then end your turn; wait for an assignment.`,
+	}));
+	return { plan: { ...input, pairs }, rosterCard, output: { run, pairs, bootstraps, ready, rosterPath, planPath } };
+}
+
+const STANDUP_RUN_RE = /^(?:MESH_(?:PING|ACK|BOOTSTRAP|READY)|PAIRS_DONE|READY_ACK) (\S+)/;
+const PING_RE = /^MESH_PING \S+ (\S+) FROM (\S+) TO (\S+)$/;
+const PAIRS_DONE_RE = /^PAIRS_DONE \S+ FROM (\S+) TOKENS (\S+)$/;
+const READY_ACK_RE = /^READY_ACK \S+ FROM (\S+)$/;
+
+/** Check a snapshot of evidence. The CLI supplies raw file contents keyed by ACK token. */
+export function checkStandup({ plan, evidenceDir, inbox = "", orchSent = "", ackFiles = {}, phase = "pairs" }) {
+	if (phase !== "pairs" && phase !== "ready") throw new Error(`Invalid --phase ${q(phase)}: expected pairs or ready.`);
+	const { run, members, pairs } = plan;
+	const orchestrator = members.find(({ role }) => role === "orchestrator").name;
+	const peers = members.filter(({ role }) => role !== "orchestrator");
+	const addresses = new Map(members.map(({ name, address }) => [name, address]));
+	const pairByToken = new Map(pairs.map((pair) => [pair.token, pair]));
+	const tokensBySender = new Map(peers.map(({ name }) => [name, pairs.filter(({ sender }) => sender === name).map(({ token }) => token)]));
+	const pairsDone = Object.fromEntries(peers.map(({ name }) => [name, false]));
+	const readyAcks = { ...pairsDone };
+	const sent = new Set(orchSent.split(/\r?\n/));
+	const acksToSend = [];
+	const invalid = [];
+	for (const [, tagFrom, body] of inbox.matchAll(/<hc from="([^"]+)"[^>]*>([\s\S]*?)<\/hc>/g)) {
+		const text = body.trim();
+		const messageRun = STANDUP_RUN_RE.exec(text)?.[1];
+		if (messageRun && messageRun !== run) continue;
+		const ping = PING_RE.exec(text);
+		const done = PAIRS_DONE_RE.exec(text);
+		const ready = READY_ACK_RE.exec(text);
+		const from = ping?.[2] ?? done?.[1] ?? ready?.[1];
+		const address = addresses.get(from);
+		const tagAddress = tagFrom.split(/\s+/)[0];
+		if (!from) invalid.push({ text, reason: "Malformed or unexpected standup envelope." });
+		else if (!address) invalid.push({ text, reason: `Unknown sender ${from}.` });
+		else if (address !== tagAddress) invalid.push({ text, reason: `Wrong from-address for ${from}: expected ${address}, got ${tagAddress}.` });
+		else if (ping) {
+			const pair = pairByToken.get(ping[1]);
+			if (ping[3] !== orchestrator || !pair || text !== pingLine(run, pair)) {
+				invalid.push({ text, reason: "PING token or endpoints do not match a planned PING to the orchestrator." });
+				continue;
+			}
+			const ack = ackLine(run, pair);
+			if (!sent.has(ack)) {
+				acksToSend.push({ address, text: ack });
+				sent.add(ack);
+			}
+		} else if (done) {
+			const expected = tokensBySender.get(from);
+			const tokens = done[2].split(",");
+			if (!expected || tokens.length !== expected.length || !expected.every((token) => tokens.includes(token))) {
+				invalid.push({ text, reason: "PAIRS_DONE tokens do not match the member's planned PINGs." });
+			} else pairsDone[from] = true;
+		} else if (Object.hasOwn(readyAcks, from)) readyAcks[from] = true;
+		else invalid.push({ text, reason: "READY_ACK must come from a member other than the orchestrator." });
+	}
+	const pairResults = pairs.map((pair) => {
+		const ack = ackFiles[pair.token]?.replace(/\r?\n$/, "");
+		return { ...pair, status: ack === ackLine(run, pair) ? "pass" : "pending", evidence: ackPath(evidenceDir, pair.token) };
+	});
+	const outstanding = [
+		...acksToSend.map(({ address, text }) => `Send to ${address}: ${text}`),
+		...pairResults.filter(({ status }) => status === "pending").map(({ token, sender }) => `Record ACK for ${token} sent by ${sender}.`),
+		...peers.filter(({ name }) => !pairsDone[name]).map(({ name }) => `Await PAIRS_DONE from ${name}.`),
+	];
+	if (phase === "ready") outstanding.push(...peers.filter(({ name }) => !readyAcks[name]).map(({ name }) => `Await READY_ACK from ${name}.`));
+	return { phase, acksToSend, pairs: pairResults, pairsDone, readyAcks, invalid, outstanding, done: outstanding.length === 0 };
 }
 
 // ---------- Oracle consultation envelopes ----------
@@ -492,6 +640,15 @@ function flagArgs(args, names) {
 const csv = (v) => (v === undefined ? undefined : v.split(",").filter(Boolean));
 const stdin = () => readFileSync(0, "utf8");
 
+function readOptionalFile(path) {
+	try {
+		return readFileSync(path, "utf8");
+	} catch (error) {
+		if (error.code === "ENOENT") return "";
+		throw error;
+	}
+}
+
 export function runCli(argv, io = { stdin }) {
 	const [cmd, ...rest] = argv;
 	if (cmd === "parse") {
@@ -546,6 +703,25 @@ export function runCli(argv, io = { stdin }) {
 		const f = flagArgs(rest, ["--names"]);
 		return enumeratePairs(csv(f["--names"]));
 	}
+	if (cmd === "standup" || cmd === "standup-check") {
+		const f = flagArgs(rest, cmd === "standup" ? ["--evidence"] : ["--evidence", "--phase"]);
+		if (!f["--evidence"]) throw new Error("--evidence is required.");
+		const evidenceDir = resolve(f["--evidence"]);
+		if (!statSync(evidenceDir, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`Evidence directory does not exist: ${evidenceDir}`);
+		if (cmd === "standup") {
+			const { plan, rosterCard, output } = buildStandup(JSON.parse(io.stdin()), evidenceDir);
+			writeFileSync(output.planPath, `${JSON.stringify(plan, null, 2)}\n`);
+			writeFileSync(output.rosterPath, rosterCard);
+			return output;
+		}
+		const plan = JSON.parse(readFileSync(join(evidenceDir, "plan.json"), "utf8"));
+		return checkStandup({
+			phase: f["--phase"], plan, evidenceDir,
+			inbox: readOptionalFile(join(evidenceDir, "inbox.txt")),
+			orchSent: readOptionalFile(join(evidenceDir, "orch-sent.txt")),
+			ackFiles: Object.fromEntries(plan.pairs.map(({ token }) => [token, readOptionalFile(ackPath(evidenceDir, token))])),
+		});
+	}
 	if (cmd === "consult-query" || cmd === "consult-validate") {
 		const f = flagArgs(rest, ["--run", "--id", "--from", "--to", "--roster", "--kind"]);
 		const p = { run: f["--run"], id: f["--id"], from: f["--from"], to: f["--to"], roster: csv(f["--roster"]) };
@@ -555,7 +731,7 @@ export function runCli(argv, io = { stdin }) {
 		if (kind !== "result") throw new Error(`Invalid --kind ${q(kind)}: expected ack or result.`);
 		return validateResult(io.stdin(), p);
 	}
-	throw new Error("Usage: mesh-config.mjs parse|launch-args|role-bootstrap|role-loaded|role-name|split-plan|pairs|consult-query|consult-validate");
+	throw new Error("Usage: mesh-config.mjs parse|launch-args|role-bootstrap|role-loaded|role-name|split-plan|pairs|standup|standup-check|consult-query|consult-validate");
 }
 
 // Run the CLI only when this file is the entry point. Host argv[1] may be "-", a
